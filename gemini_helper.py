@@ -2,7 +2,62 @@
 
 from __future__ import annotations
 
+import logging
 import os
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _failure_info(error: Exception) -> tuple[str, str]:
+    """Map SDK failures to fixed, safe diagnostics; never return exception text."""
+    if isinstance(error, ImportError):
+        return "GEMINI_SDK", "伺服器的 Gemini 套件無法載入；請聯絡維護者。"
+    try:
+        import httpx
+        timeout_types = (TimeoutError, httpx.TimeoutException)
+        network_types = (ConnectionError, httpx.TransportError)
+    except ImportError:
+        timeout_types, network_types = (TimeoutError,), (ConnectionError,)
+
+    if isinstance(error, timeout_types):
+        return "GEMINI_TIMEOUT", "Google 回應逾時（20 秒）；請稍後重試。"
+    if isinstance(error, network_types):
+        return "GEMINI_NETWORK", "伺服器無法連線至 Google；請檢查網路連線後重試。"
+
+    # The SDK preserves Google's structured ErrorInfo in APIError.details.
+    # Inspect only bounded fields and never expose its request, URL, or message.
+    details = getattr(error, "details", None)
+    envelope = details.get("error", details) if isinstance(details, dict) else {}
+    reasons = set()
+    if isinstance(envelope, dict):
+        items = envelope.get("details", [])
+        if isinstance(items, list):
+            reasons = {item["reason"] for item in items[:20]
+                       if isinstance(item, dict) and isinstance(item.get("reason"), str)}
+    code = getattr(error, "code", None)
+    if not isinstance(code, int):
+        code = None
+    if reasons & {"API_KEY_INVALID", "API_KEY_EXPIRED", "API_KEY_NOT_FOUND", "CREDENTIALS_MISSING"} or code == 401:
+        return "GEMINI_KEY_INVALID", "API Key 無效或已失效；請在 Google AI Studio 確認並重新輸入。"
+    if reasons & {"API_KEY_SERVICE_BLOCKED", "API_KEY_IP_ADDRESS_BLOCKED", "API_KEY_HTTP_REFERRER_BLOCKED",
+                  "API_KEY_ANDROID_APP_BLOCKED", "API_KEY_IOS_APP_BLOCKED"}:
+        return "GEMINI_KEY_RESTRICTED", "API Key 的應用程式或 API 限制拒絕此伺服器；請檢查金鑰限制。"
+    if "SERVICE_DISABLED" in reasons:
+        return "GEMINI_API_DISABLED", "金鑰所屬專案尚未啟用 Gemini API；請確認專案設定。"
+    if "BILLING_DISABLED" in reasons:
+        return "GEMINI_BILLING", "Google 專案帳務狀態不允許此請求；請確認可用方案與帳務設定。"
+    if code == 429:
+        return "GEMINI_QUOTA", "已達 Google 速率或配額上限；請在 AI Studio 檢查配額，恢復後再試。"
+    if code == 403:
+        return "GEMINI_PERMISSION", "Google 拒絕存取；請確認專案權限、API 啟用狀態及金鑰限制。"
+    if code == 404:
+        return "GEMINI_MODEL", "此專案無法使用 gemini-2.5-flash；請確認模型可用性。"
+    if code == 400:
+        return "GEMINI_REQUEST", "Google 拒絕請求；請確認專案、模型與服務地區是否支援。"
+    if code in {500, 502, 503, 504}:
+        return "GEMINI_UNAVAILABLE", "Google 服務暫時無法使用；請稍後重試。"
+    return "GEMINI_UNKNOWN", "發生未分類錯誤；請將此代碼提供給維護者。"
 
 
 class GeminiSummarizer:
@@ -25,7 +80,7 @@ class GeminiSummarizer:
 
     def summarize(self, text: str) -> str:
         if not text.strip():
-            return "無可擷取文字（掃描頁面未執行 OCR）"
+            return "章節首頁無可擷取文字（可能為圖片或空白頁；未執行 OCR）"
         if self._failure:
             return self._failure
         if not self.api_key:
@@ -59,7 +114,9 @@ class GeminiSummarizer:
                 return "模型未回傳摘要"
             # Enforce the limit even if the model ignores the prompt.
             return summary if len(summary) <= 50 else summary[:49] + "…"
-        except Exception:
+        except Exception as error:
             # Do not expose exception strings: SDK errors may contain request data or credentials.
-            self._failure = "摘要暫停：請確認 API Key、配額與網路後重試"
+            code, message = _failure_info(error)
+            self._failure = f"摘要暫停 [{code}]：{message}"
+            LOGGER.warning("Gemini summary paused: %s", code)
             return self._failure

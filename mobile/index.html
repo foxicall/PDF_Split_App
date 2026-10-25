@@ -34,7 +34,7 @@
       <details><summary>智慧摘要（選用）</summary><label class="check"><input id="gemini" type="checkbox">啟用 Gemini 章節摘要</label><label for="api-key">Gemini API Key</label><input id="api-key" type="password" autocomplete="off" placeholder="留空時使用伺服器設定"><p class="muted">啟用後會傳送各章首頁最多 8,000 字元至 Google，可能產生 API 費用。不執行 OCR，金鑰不存入瀏覽器儲存空間。</p></details>
       <button id="split" class="primary wide">拆分並打包 ZIP</button>
     </section>
-    <section id="result" class="card" hidden><h2>章節已整理完成</h2><a id="download" class="primary wide" download="chapters.zip">下載章節 ZIP</a><p class="muted">下載串流送出後會刪除伺服器檔案。請保留下載的 ZIP。</p><div id="chapters"></div></section>
+    <section id="result" class="card" hidden><h2>章節已整理完成</h2><a id="download" class="primary wide" download="chapters.zip">下載章節 ZIP</a><p class="muted">下載串流送出後會刪除伺服器檔案。請保留下載的 ZIP。</p><p id="summary-notice" role="status" hidden>部分摘要未完成，PDF 與 ZIP 仍可下載。首次 API 錯誤後已暫停後續摘要。請依下方錯誤提示處理，下載 ZIP 後重新上傳 PDF，再啟用摘要重試；不需要提供 API Key 給維護者。</p><div id="chapters"></div></section>
     <button id="clear" class="secondary wide" hidden>清除這次工作</button>
     <section class="notes"><h2>安裝到手機</h2><p id="install-help">Android：Chrome 選單 →「安裝應用程式」或「加到主畫面」。iPhone：Safari 分享 →「加入主畫面」。</p><p>需使用 HTTPS 網址。安裝後仍需網路與伺服器才能拆分；離線只能開啟介面。大型上傳期間請保持畫面開啟，手機切到背景可能中斷。</p><p>上傳新文件會清除上一份檔案。工作預設保留 30 分鐘，未下載的檔案也會自動清理。</p></section>
   </main><footer>PDF Bookmark Splitter · 章節整理工具</footer>

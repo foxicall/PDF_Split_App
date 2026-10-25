@@ -239,7 +239,7 @@ def split_pdf(source_path: Path, workspace: TemporaryWorkspace, chapters: list[C
                             text = ""
                         finally:
                             del page
-                        summary = summarize(text) if text else "無可擷取文字（掃描頁面未執行 OCR）"
+                        summary = summarize(text) if text else "章節首頁無可擷取文字（可能為圖片或空白頁；未執行 OCR）"
                     rows.append({"檔名": filename, "章節": chapter.title,
                                  "起始頁": chapter.start_page, "結束頁": chapter.end_page,
                                  "頁數": chapter.end_page - chapter.start_page + 1, "摘要": summary})

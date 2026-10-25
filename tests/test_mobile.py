@@ -1,7 +1,10 @@
 import time
+import io
+import zipfile
 from unittest.mock import Mock
 
 from google import genai
+from google.genai import errors
 
 from tests.conftest import upload_to_store
 from tests.test_transfer import http_client
@@ -57,3 +60,34 @@ def test_mobile_bad_settings_preserve_upload(service, make_pdf):
         assert response.status_code >= 400
         assert session.state == "uploaded"
         assert (session.workspace.path / "source.pdf").exists()
+
+
+def test_summary_quota_failure_preserves_zip_and_cleans_download(service, make_pdf, monkeypatch):
+    google_client = Mock()
+    google_client.models.generate_content.side_effect = errors.APIError(
+        429, {'error': {'message': 'private-document test-key', 'status': 'RESOURCE_EXHAUSTED'}})
+    monkeypatch.setattr(genai, 'Client', Mock(return_value=google_client))
+    session = upload_to_store(service.store, make_pdf(pages=2))
+    base = f"http://127.0.0.1:{service.port}/{session.token}/"
+    with http_client() as client:
+        response = client.post(base + 'process', json={
+            'upload_id': session.upload_id, 'mode': 'fixed', 'pages': 1,
+            'gemini': True, 'api_key': 'test-key'}, timeout=5)
+        assert response.status_code == 202
+        deadline = time.monotonic() + 5
+        while session.state == 'processing' and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert session.state == 'ready'
+        details = client.get(base + 'details', timeout=5).json()
+        assert all('GEMINI_QUOTA' in row['摘要'] for row in details['rows'])
+        assert 'test-key' not in str(details) and 'private-document' not in str(details)
+        directory = session.workspace.path
+        response = client.get(base + 'download', timeout=5)
+        assert response.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            assert len(archive.namelist()) == 2 and archive.testzip() is None
+        deadline = time.monotonic() + 2
+        while directory.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert not directory.exists()
+    google_client.models.generate_content.assert_called_once()

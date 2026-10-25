@@ -33,6 +33,7 @@ function render(data) {
   $('download').href = '/' + token + '/download';
   const labels = {empty:'選擇檔案即可開始。',uploaded:'上傳完成，請選擇拆分方式。',processing:'正在拆分與打包，請稍候…',ready:'ZIP 已就緒，可以下載。',downloading:'下載傳輸中…',downloaded:'下載串流已送出，伺服器檔案已清除。',uploading:'先前上傳未完成，請重新上傳。'};
   $('status').textContent = data.error || labels[data.state] || '請重新上傳。';
+  $('summary-notice').hidden = !data.rows.some(row => String(row['摘要']).startsWith('摘要暫停'));
   if (data.state === 'uploaded') {
     $('document-info').textContent = `${data.filename} · ${data.page_count} 頁`;
     $('warnings').textContent = data.warnings.join(' ');

@@ -94,6 +94,19 @@ streamlit run app.py
 
 也可在側欄輸入密碼欄位，優先於環境變數。必須勾選「啟用 Gemini 章節摘要」才會呼叫 Google；每章只送首頁純文字最多 8,000 字元，不上傳整份 PDF。模型固定 `gemini-2.5-flash`，輸出繁體中文並在程式端限制 50 個字元。無文字／掃描頁面會顯示提示，不執行 OCR。SDK 呼叫設定 20 秒逾時；支援重試設定的 SDK 會關閉自動重試。任何 API 錯誤不影響 ZIP，該次作業的後續摘要會停用以避免重複費用；錯誤訊息不包含 API Key 或文件內容。
 
+摘要失敗時，畫面會顯示固定的安全診斷代碼；伺服器只記錄代碼，不記錄例外原文、金鑰、網址或文件文字。舊版的「請確認 API Key、配額與網路」不能用來判定實際原因，也無法回溯該次錯誤。修正設定後，先下載現有 ZIP，再重新上傳文件以重試摘要。
+
+| 診斷代碼 | 檢查方向 |
+| --- | --- |
+| `GEMINI_KEY_INVALID` | 在 [Google AI Studio](https://aistudio.google.com/api-keys) 確認金鑰有效，並重新輸入；不要貼到聊天或 GitHub。 |
+| `GEMINI_KEY_RESTRICTED` / `GEMINI_PERMISSION` / `GEMINI_API_DISABLED` | 檢查金鑰所屬專案、API 啟用狀態及伺服器端使用限制。 |
+| `GEMINI_QUOTA` | 檢查 AI Studio 的速率／配額；等待恢復或調整已授權的方案。重試本身不會增加配額。 |
+| `GEMINI_TIMEOUT` / `GEMINI_NETWORK` / `GEMINI_UNAVAILABLE` | Google 回應逾時、網路連線或服務暫時異常，稍後重試。 |
+| `GEMINI_MODEL` / `GEMINI_REQUEST` / `GEMINI_BILLING` | 檢查專案的模型、服務地區與帳務可用性；程式不會自動開通付費方案。 |
+| `GEMINI_SDK` / `GEMINI_UNKNOWN` | 提供代碼給維護者檢查，無須提供金鑰或原始文件。 |
+
+「章節首頁無可擷取文字」只代表該章第一頁無文字層，可能為圖片或空白頁，不代表整章都沒有文字。此工具不會自動將文件送至 OCR。
+
 ## 遠端／雲端部署
 
 上傳 iframe 和 Streamlit 是兩個 HTTP 入口。瀏覽器必須能存取傳輸服務；只有開放 8501 的平台不能直接使用預設設定。建議用同一個 HTTPS 反向代理提供兩個路徑，並將 `/transfer/` 前綴去除後轉送至 8765。
