@@ -78,12 +78,31 @@ public class MainActivity extends Activity {
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
         web.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri target = request.getUrl();
+                if ("pdfsplitter".equals(target.getScheme())) {
+                    if ("download".equals(target.getHost())) chooseDownload(target.getQueryParameter("url"));
+                    return true;
+                }
+                if (BackendUrl.isDownload(backend, target.toString())) {
+                    chooseDownload(target.toString()); return true;
+                }
                 if (BackendUrl.sameOrigin(backend, request.getUrl().toString())) return false;
                 if (request.hasGesture() && "https".equalsIgnoreCase(request.getUrl().getScheme())) {
                     try { startActivity(new Intent(Intent.ACTION_VIEW, request.getUrl())); }
                     catch (ActivityNotFoundException ignored) { message("找不到可開啟連結的瀏覽器。"); }
                 }
                 return true;
+            }
+            @Override public void onPageFinished(WebView view, String url) {
+                if (!BackendUrl.sameOrigin(backend, url)) return;
+                // DownloadListener is too late: WebView has already fetched the one-shot ZIP.
+                // Intercept the DOM click before any HTTP request, then use a validated native route.
+                view.evaluateJavascript("(function(){if(window.__pdfNativeDownload)return;"
+                        + "window.__pdfNativeDownload=true;document.addEventListener('click',function(event){"
+                        + "var link=event.target.closest?event.target.closest('a'):null;"
+                        + "if(!link||link.id!=='download')return;event.preventDefault();event.stopImmediatePropagation();"
+                        + "location.href='pdfsplitter://download?url='+encodeURIComponent(link.href);"
+                        + "},true);})();", null);
             }
             @Override public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
                 handler.cancel(); message("伺服器的 HTTPS 憑證無效，已停止連線。");

@@ -92,6 +92,7 @@ public class MainActivityTest {
             click(device, "下載章節 ZIP");
             assertDocumentPicker(device); device.pressBack();
             // Cancelling the save dialog must leave the one-shot ZIP available.
+            assertTrue(device.wait(Until.hasObject(By.text("已取消儲存；ZIP 尚未開始下載。")), 10000));
             waitJs(activity, "!document.getElementById('download').hidden");
             Intents.init();
             try {
