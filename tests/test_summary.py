@@ -21,9 +21,11 @@ from tests.test_transfer import http_client
 
 def wait_done(session):
     deadline = time.monotonic() + 5
-    while session.state == 'processing' and time.monotonic() < deadline:
+    # Wait on the same locked snapshot used by HTTP/UI readers, so a state
+    # transition cannot be observed before its timestamp/cleanup is committed.
+    while session.snapshot()['state'] == 'processing' and time.monotonic() < deadline:
         time.sleep(.01)
-    assert session.state != 'processing'
+    assert session.snapshot()['state'] != 'processing'
 
 
 def test_summary_reads_selected_pages_without_split_or_zip(tmp_path, make_pdf, monkeypatch):
