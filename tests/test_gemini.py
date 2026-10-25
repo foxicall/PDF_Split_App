@@ -67,6 +67,7 @@ def test_blank_text_never_calls_api(monkeypatch):
     (429, None, 'GEMINI_QUOTA'),
     (400, None, 'GEMINI_REQUEST'),
     (503, None, 'GEMINI_UNAVAILABLE'),
+    (504, None, 'GEMINI_DEADLINE'),
 ])
 def test_google_errors_are_actionable_without_leaking_details(monkeypatch, caplog, status, reason, expected):
     payload = {'error': {'code': status, 'message': 'private-document test-secret-key',
@@ -98,3 +99,32 @@ def test_transport_and_sdk_errors_are_redacted(monkeypatch, caplog, error, expec
     assert expected in result
     assert 'private-document' not in result + caplog.text
     assert 'test-secret-key' not in result + caplog.text
+
+
+def test_real_sdk_sends_longer_deadline_and_does_not_retry_504(monkeypatch, caplog):
+    """Exercise SDK HTTP serialization without a real Google request or key."""
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        assert request.headers['x-server-timeout'] == '90'
+        assert request.extensions['timeout']['read'] == 90
+        return httpx.Response(504, json={'error': {'code': 504,
+            'status': 'DEADLINE_EXCEEDED', 'message': 'private-document test-secret-key'}})
+
+    actual_client = genai.Client
+
+    def client_factory(**kwargs):
+        kwargs['http_options'].client_args = {'transport': httpx.MockTransport(respond)}
+        return actual_client(**kwargs)
+
+    monkeypatch.setattr(genai, 'Client', client_factory)
+    waiting = Mock()
+    with GeminiSummarizer('test-secret-key', retry_transient=True, on_retry=waiting) as helper:
+        result = helper.summarize('private-document')
+    assert len(requests) == 1
+    waiting.assert_not_called()
+    assert 'GEMINI_DEADLINE' in result and 'HTTP 504' in result and '未自動重送' in result
+    assert 'http=504' in caplog.text
+    assert 'test-secret-key' not in result + caplog.text
+    assert 'private-document' not in result + caplog.text

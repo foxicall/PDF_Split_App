@@ -59,7 +59,7 @@ function render(data) {
   const labels = {empty:'選擇檔案即可開始。',uploaded:'上傳完成，請選擇處理方式。',processing:'正在拆分與打包，請稍候…',ready:'ZIP 已就緒，可以下載。',downloading:'下載傳輸中…',downloaded:'下載串流已送出，伺服器檔案已清除。',uploading:'先前上傳未完成，請重新上傳。',summarized:'摘要作業結束，原始暫存檔已清除。',cancelled:'摘要已取消，暫存檔已清除；請重新上傳以開始新工作。'};
   if (data.state === 'processing' && data.operation === 'summary') {
     const progress = data.progress || {};
-    labels.processing = data.cancel_requested ? '正在取消；完成目前頁面擷取或 Google 請求後停止，已送出請求仍可能計費。' : progress.stage === 'retry_wait' ? `Google 暫時無法回應，等待 ${progress.wait_seconds} 秒後重試（整次最多額外 2 次）…` : ['summarizing','integrating','requesting'].includes(progress.stage) ? `${progress.stage === 'integrating' ? '正在整合各段重點' : '正在逐段摘要'}：已完成 ${progress.done} / ${progress.total} 步驟，共 ${data.summary_requests} 次請求嘗試…` : `正在擷取文字：${progress.done || 0} / ${progress.total || '…'} 頁`;
+    labels.processing = data.cancel_requested ? '正在取消；完成目前頁面擷取或 Google 請求後停止（單次請求最長 90 秒），已送出請求仍可能計費。' : progress.stage === 'retry_wait' ? `Google 暫時無法回應，等待 ${progress.wait_seconds} 秒後重試（整次最多額外 2 次）…` : ['summarizing','integrating','requesting'].includes(progress.stage) ? `${progress.stage === 'integrating' ? '正在整合各段重點' : '正在逐段摘要'}：已完成 ${progress.done} / ${progress.total} 步驟，共 ${data.summary_requests} 次請求嘗試…` : `正在擷取文字：${progress.done || 0} / ${progress.total || '…'} 頁`;
   }
   $('status').textContent = data.error || labels[data.state] || '請重新上傳。';
   $('summary-notice').hidden = !data.rows.some(row => String(row['摘要']).startsWith('摘要暫停'));

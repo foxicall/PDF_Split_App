@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 import streamlit as st
 import streamlit.components.v1 as components
 
-from gemini_helper import GEMINI_MODEL, GeminiSummarizer, SUMMARY_STYLES
+from gemini_helper import GEMINI_MODEL, GeminiSummarizer, SUMMARY_STYLES, REQUEST_TIMEOUT_SECONDS
 from summary_markdown import summary_filename, summary_markdown
 from pdf_processor import PDFError, MAX_SUMMARY_PAGES, bookmark_chapters, fixed_chapters, validate_summary_range
 from transfer_server import RequestError, default_service
@@ -64,7 +64,7 @@ def main() -> None:
         has_key = bool(api_key.strip() or os.environ.get("GEMINI_API_KEY", "").strip())
         if os.environ.get("GEMINI_API_KEY"):
             st.caption("已設定伺服器環境變數 API Key。")
-        st.caption(f"使用 {GEMINI_MODEL}。勾選即同意將文字傳送 Google。拆分模式每章首頁最多 8,000 字；只摘要模式每段最多 24,000 字、整次最多 480,000 字。1 段為 1 次請求，多段為段數加 1 次整合（最多 21 次），另有最多 2 次暫時性服務錯誤重試；每次按產生或接續最多 23 次嘗試，可能再次計費。不執行 OCR。")
+        st.caption(f"使用 {GEMINI_MODEL}。勾選即同意將文字傳送 Google。拆分模式每章首頁最多 8,000 字；只摘要模式每段最多 24,000 字、整次最多 480,000 字。1 段為 1 次請求，多段為段數加 1 次整合（最多 21 次），另有最多 2 次暫時性服務錯誤重試；每次按產生或接續最多 23 次嘗試，可能再次計費。每次請求最長等待 {REQUEST_TIMEOUT_SECONDS} 秒；HTTP 504／逾時不自動重送。不執行 OCR。")
         if use_gemini and not has_key:
             st.warning("尚未提供 API Key；仍可拆分，但不會產生摘要。")
         st.divider()
@@ -118,7 +118,7 @@ def main() -> None:
     if state == "processing":
         if snapshot["operation"] == "summary":
             progress = snapshot["progress"]
-            st.info("正在取消，完成目前頁面擷取或 Gemini 請求後停止。已送出請求仍可能計費。"
+            st.info(f"正在取消，完成目前頁面擷取或 Gemini 請求後停止（單次請求最長 {REQUEST_TIMEOUT_SECONDS} 秒）。已送出請求仍可能計費。"
                     if snapshot["cancel_requested"] else f"Google 暫時無法回應，等待 {progress.get('wait_seconds')} 秒後重試；整次最多額外 2 次。"
                     if progress.get("stage") == "retry_wait" else f"正在產生分段摘要／整合：已完成 {progress.get('done', 0)} / {progress.get('total', '…')} 步驟，共 {snapshot['summary_requests']} 次請求嘗試。"
                     if progress.get("stage") in {"summarizing", "integrating", "requesting"} else

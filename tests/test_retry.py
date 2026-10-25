@@ -219,17 +219,27 @@ def test_long_retry_after_pauses_and_blocks_early_manual_retry(service, make_pdf
     assert not list(service.store.root.glob('job-*'))
 
 
-def test_ambiguous_timeout_pauses_without_automatic_resend(service, make_pdf, monkeypatch):
+@pytest.mark.parametrize('failure,expected', [
+    (httpx.ReadTimeout('private-key private-document'), 'GEMINI_TIMEOUT'),
+    (errors.APIError(504, {'error': {'message': 'private-key private-document'}}), 'GEMINI_DEADLINE'),
+])
+def test_ambiguous_timeout_pauses_without_automatic_resend(service, make_pdf, monkeypatch, failure, expected):
     google = Mock()
-    google.models.generate_content.side_effect = httpx.ReadTimeout('private-key private-document')
+    google.models.generate_content.side_effect = failure
     monkeypatch.setattr(genai, 'Client', Mock(return_value=google))
     session = upload_to_store(service.store, make_pdf(pages=2))
     service.store.start_mobile_process(session, options(session))
     wait_done(session)
-    assert session.state == 'summary_paused' and 'GEMINI_TIMEOUT' in session.error
+    assert session.state == 'summary_paused' and expected in session.error
     google.models.generate_content.assert_called_once()
     assert 'private-key' not in str(session.snapshot())
     assert not (session.workspace.path / 'source.pdf').exists()
+    google.models.generate_content.side_effect = None
+    google.models.generate_content.return_value = SimpleNamespace(text='手動接續成功')
+    service.store.start_mobile_process(session, options(session), resume=True)
+    wait_done(session)
+    assert session.state == 'summarized' and session.document_summary['text'] == '手動接續成功'
+    assert session.summary_requests == 2 and session.workspace is None
     service.store.clear(session)
 
 

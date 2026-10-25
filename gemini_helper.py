@@ -13,6 +13,8 @@ from email.utils import parsedate_to_datetime
 LOGGER = logging.getLogger(__name__)
 GEMINI_MODEL = "gemini-3.8-flash"
 SUMMARY_STYLES = {"brief": ("精簡", 500), "standard": ("標準", 1500), "detailed": ("詳細", 3000)}
+REQUEST_TIMEOUT_SECONDS = 90
+AUTO_RETRY_HTTP_CODES = frozenset({500, 502, 503})
 RETRY_DELAYS = (2, 4)  # Shared across the whole action, not reset for every chunk.
 MAX_AUTO_WAIT = 30
 
@@ -55,7 +57,7 @@ def _failure_info(error: Exception) -> tuple[str, str]:
         timeout_types, network_types = (TimeoutError,), (ConnectionError,)
 
     if isinstance(error, timeout_types):
-        return "GEMINI_TIMEOUT", "Google 回應逾時（20 秒）；請稍後重試。"
+        return "GEMINI_TIMEOUT", f"等待 Google 回應逾時（單次上限 {REQUEST_TIMEOUT_SECONDS} 秒）；未自動重送。可縮小頁數或選擇精簡摘要後重試，重試可能再次計費。"
     if isinstance(error, network_types):
         return "GEMINI_NETWORK", "伺服器無法連線至 Google；請檢查網路連線後重試。"
 
@@ -89,7 +91,9 @@ def _failure_info(error: Exception) -> tuple[str, str]:
         return "GEMINI_MODEL", f"此專案無法使用 {GEMINI_MODEL}；請確認金鑰所屬專案的模型權限。"
     if code == 400:
         return "GEMINI_REQUEST", "Google 拒絕請求；請確認專案、模型與服務地區是否支援。"
-    if code in {500, 502, 503, 504}:
+    if code == 504:
+        return "GEMINI_DEADLINE", "Google 回傳 HTTP 504：請求未在期限內完成；這不是金鑰無效的判定。未自動重送，請稍後縮小頁數或選擇精簡摘要重試，重試可能再次計費。"
+    if code in AUTO_RETRY_HTTP_CODES:
         return "GEMINI_UNAVAILABLE", "Google 服務暫時無法使用；請稍後重試。"
     return "GEMINI_UNKNOWN", "發生未分類錯誤；請將此代碼提供給維護者。"
 
@@ -146,7 +150,7 @@ class GeminiSummarizer:
                 return self._client.models.generate_content(**kwargs)
             except Exception as error:
                 # Never auto-retry invalid keys, denied models, quota, or ambiguous timeouts.
-                delay = next(self._retry_delays, None) if getattr(error, "code", None) in {500, 502, 503, 504} else None
+                delay = next(self._retry_delays, None) if getattr(error, "code", None) in AUTO_RETRY_HTTP_CODES else None
                 if delay is None:
                     raise
                 delay = max(delay + random.uniform(0, 0.5), retry_after_seconds(error))
@@ -170,7 +174,9 @@ class GeminiSummarizer:
             from google.genai import types
 
             if self._client is None:
-                options = {"timeout": 20_000}
+                # This also becomes X-Server-Timeout in google-genai. A 20s
+                # deadline repeatedly cut off detailed summaries with HTTP 504.
+                options = {"timeout": REQUEST_TIMEOUT_SECONDS * 1000}
                 # Older allowed SDK versions do not expose HttpRetryOptions.
                 if hasattr(types, "HttpRetryOptions"):
                     options["retry_options"] = types.HttpRetryOptions(attempts=1)
@@ -207,7 +213,7 @@ class GeminiSummarizer:
         except Exception as error:
             # Do not expose exception strings: SDK errors may contain request data or credentials.
             code, message = _failure_info(error)
-            self._failure_retryable = code in {"GEMINI_UNAVAILABLE", "GEMINI_TIMEOUT", "GEMINI_NETWORK", "GEMINI_QUOTA"}
+            self._failure_retryable = code in {"GEMINI_UNAVAILABLE", "GEMINI_DEADLINE", "GEMINI_TIMEOUT", "GEMINI_NETWORK", "GEMINI_QUOTA"}
             self._failure_retry_after = retry_after_seconds(error) if self._failure_retryable else 0
             self._failure = f"摘要暫停 [{code}]：{message}"
             http_status = getattr(error, "code", None)

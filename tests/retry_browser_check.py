@@ -29,7 +29,7 @@ def main():
                 js_errors = []
                 page.on('pageerror', lambda error: js_errors.append(str(error)))
                 page.goto(f'http://127.0.0.1:{service.port}/')
-                def upload(retain):
+                def upload(retain, failed_response=failure):
                     page.locator('#file').set_input_files(source)
                     page.locator('#upload').click()
                     expect(page.locator('#settings')).to_be_visible(timeout=15000)
@@ -38,7 +38,7 @@ def main():
                     page.locator('#api-key').fill('mock-key')
                     page.locator('#retain-for-retry').set_checked(retain)
                     google.models.generate_content.reset_mock()
-                    google.models.generate_content.side_effect = [SimpleNamespace(text='第一段筆記'), failure, failure, failure]
+                    google.models.generate_content.side_effect = [SimpleNamespace(text='第一段筆記'), failed_response, failed_response, failed_response]
                     page.locator('#split').click()
                 assert not page.locator('#retain-for-retry').is_checked()
                 upload(True)
@@ -63,9 +63,11 @@ def main():
                 expect(page.locator('#retry-panel')).to_be_hidden()
                 assert google.models.generate_content.call_count == 7
                 assert not list((root / 'spool').glob('job-*'))
-                upload(False)
+                upload(False, errors.APIError(504, {'error': {'message': 'private-document private-key'}}))
                 expect(page.locator('#document-result')).to_be_visible(timeout=15000)
                 expect(page.locator('#document-result h2')).to_have_text('部分摘要（未完成）')
+                expect(page.locator('#status')).to_contain_text('GEMINI_DEADLINE')
+                assert google.models.generate_content.call_count == 2
                 expect(page.locator('#retry-panel')).to_be_hidden()
                 assert not list((root / 'spool').glob('job-*'))
                 with page.expect_download() as event:
@@ -73,7 +75,7 @@ def main():
                 assert '第一段筆記' in Path(event.value.path()).read_text(encoding='utf-8')
                 assert not js_errors, js_errors
                 browser.close()
-                print('Mobile Chromium retry: bounded 503 retry, retention opt-in, partial Markdown, resume, opt-out cleanup passed; Gemini mocked.')
+                print('Mobile Chromium retry: bounded 503 retry, retention opt-in, partial Markdown, resume, HTTP 504 without auto-resend, opt-out cleanup passed; Gemini mocked.')
         finally:
             service.close()
 
