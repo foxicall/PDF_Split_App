@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 import streamlit as st
 import streamlit.components.v1 as components
 
-from gemini_helper import GeminiSummarizer
+from gemini_helper import GEMINI_MODEL, GeminiSummarizer
 from pdf_processor import PDFError, bookmark_chapters, fixed_chapters
 from transfer_server import RequestError, default_service
 
@@ -63,7 +63,7 @@ def main() -> None:
         has_key = bool(api_key.strip() or os.environ.get("GEMINI_API_KEY", "").strip())
         if os.environ.get("GEMINI_API_KEY"):
             st.caption("已設定伺服器環境變數 API Key。")
-        st.caption("啟用後會將每章首頁最多 8,000 個字元傳送至 Google Gemini，可能產生 API 費用；掃描頁面不執行 OCR。")
+        st.caption(f"使用 {GEMINI_MODEL}。啟用後會將每章首頁最多 8,000 個字元傳送至 Google Gemini，可能產生 API 費用；掃描頁面不執行 OCR。")
         if use_gemini and not has_key:
             st.warning("尚未提供 API Key；仍可拆分，但不會產生摘要。")
         st.divider()

@@ -31,7 +31,7 @@
       <label for="mode">拆分方式</label><select id="mode"><option value="bookmarks">依書籤章節</option><option value="fixed">固定頁數</option></select>
       <div id="depth-field"><label for="depth">使用第 1 層至指定層級</label><select id="depth"></select></div>
       <div id="pages-field" hidden><label for="pages">每份 PDF 的頁數</label><input id="pages" type="number" min="1" max="1000000" value="10"></div>
-      <details><summary>智慧摘要（選用）</summary><label class="check"><input id="gemini" type="checkbox">啟用 Gemini 章節摘要</label><label for="api-key">Gemini API Key</label><input id="api-key" type="password" autocomplete="off" placeholder="留空時使用伺服器設定"><p class="muted">啟用後會傳送各章首頁最多 8,000 字元至 Google，可能產生 API 費用。不執行 OCR，金鑰不存入瀏覽器儲存空間。</p></details>
+      <details><summary>智慧摘要（選用）</summary><label class="check"><input id="gemini" type="checkbox">啟用 Gemini 章節摘要</label><label for="api-key">Gemini API Key</label><input id="api-key" type="password" autocomplete="off" placeholder="留空時使用伺服器設定"><p class="muted">摘要模型：Gemini 3.8 Flash（gemini-3.8-flash）。啟用後會傳送各章首頁最多 8,000 字元至 Google，可能產生 API 費用。不執行 OCR，金鑰不存入瀏覽器儲存空間。</p></details>
       <button id="split" class="primary wide">拆分並打包 ZIP</button>
     </section>
     <section id="result" class="card" hidden><h2>章節已整理完成</h2><a id="download" class="primary wide" download="chapters.zip">下載章節 ZIP</a><p class="muted">下載串流送出後會刪除伺服器檔案。請保留下載的 ZIP。</p><p id="summary-notice" role="status" hidden>部分摘要未完成，PDF 與 ZIP 仍可下載。首次 API 錯誤後已暫停後續摘要。請依下方錯誤提示處理，下載 ZIP 後重新上傳 PDF，再啟用摘要重試；不需要提供 API Key 給維護者。</p><div id="chapters"></div></section>

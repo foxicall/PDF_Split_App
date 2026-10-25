@@ -7,6 +7,7 @@ import os
 
 
 LOGGER = logging.getLogger(__name__)
+GEMINI_MODEL = "gemini-3.8-flash"
 
 
 def _failure_info(error: Exception) -> tuple[str, str]:
@@ -52,7 +53,7 @@ def _failure_info(error: Exception) -> tuple[str, str]:
     if code == 403:
         return "GEMINI_PERMISSION", "Google 拒絕存取；請確認專案權限、API 啟用狀態及金鑰限制。"
     if code == 404:
-        return "GEMINI_MODEL", "此專案無法使用 gemini-2.5-flash；請確認模型可用性。"
+        return "GEMINI_MODEL", f"此專案無法使用 {GEMINI_MODEL}；請確認金鑰所屬專案的模型權限。"
     if code == 400:
         return "GEMINI_REQUEST", "Google 拒絕請求；請確認專案、模型與服務地區是否支援。"
     if code in {500, 502, 503, 504}:
@@ -97,7 +98,7 @@ class GeminiSummarizer:
                 self._client = genai.Client(api_key=self.api_key,
                                            http_options=types.HttpOptions(**options))
             response = self._client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=GEMINI_MODEL,
                 contents=text[:8000],
                 config=types.GenerateContentConfig(
                     system_instruction=(

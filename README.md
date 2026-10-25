@@ -33,7 +33,7 @@ app.py                 # Streamlit UI、工作狀態、拆分與摘要串接
 pdf_processor.py       # 書籤解析、頁碼規劃、磁碟拆分、ZIP、TemporaryDirectory
 transfer_server.py     # 分塊 HTTP 上傳、串流下載、Session 追蹤、背景清理器
 upload_widget.html     # 瀏覽器端分塊上傳與原生下載按鈕
-gemini_helper.py       # google-genai / gemini-2.5-flash
+gemini_helper.py       # google-genai / gemini-3.8-flash
 requirements.txt
 tests/                 # 核心、傳輸、清理與摘要的測試
 README.md
@@ -92,7 +92,7 @@ export GEMINI_API_KEY='你的 API Key'
 streamlit run app.py
 ```
 
-也可在側欄輸入密碼欄位，優先於環境變數。必須勾選「啟用 Gemini 章節摘要」才會呼叫 Google；每章只送首頁純文字最多 8,000 字元，不上傳整份 PDF。模型固定 `gemini-2.5-flash`，輸出繁體中文並在程式端限制 50 個字元。無文字／掃描頁面會顯示提示，不執行 OCR。SDK 呼叫設定 20 秒逾時；支援重試設定的 SDK 會關閉自動重試。任何 API 錯誤不影響 ZIP，該次作業的後續摘要會停用以避免重複費用；錯誤訊息不包含 API Key 或文件內容。
+也可在側欄輸入密碼欄位，優先於環境變數。必須勾選「啟用 Gemini 章節摘要」才會呼叫 Google；每章只送首頁純文字最多 8,000 字元，不上傳整份 PDF。模型使用 **Gemini 3.8 Flash**（`gemini-3.8-flash`），輸出繁體中文並在程式端限制 50 個字元。2026-10-25 已透過 Google Models API 的清單與模型資料確認此型號支援 `generateContent`；這項唯讀檢查不傳送 PDF，也不執行摘要生成。實際權限仍取決於使用者提供的金鑰及專案，程式不會自動降回舊模型。無文字／掃描頁面會顯示提示，不執行 OCR。SDK 呼叫設定 20 秒逾時；支援重試設定的 SDK 會關閉自動重試。任何 API 錯誤不影響 ZIP，該次作業的後續摘要會停用以避免重複費用；錯誤訊息不包含 API Key 或文件內容。
 
 摘要失敗時，畫面會顯示固定的安全診斷代碼；伺服器只記錄代碼，不記錄例外原文、金鑰、網址或文件文字。舊版的「請確認 API Key、配額與網路」不能用來判定實際原因，也無法回溯該次錯誤。修正設定後，先下載現有 ZIP，再重新上傳文件以重試摘要。
 

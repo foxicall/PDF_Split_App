@@ -27,7 +27,7 @@ def test_summary_is_limited_and_client_closed(monkeypatch):
         result = summarizer.summarize("文" * 9000)
     assert len(result) == 50
     call = client.models.generate_content.call_args.kwargs
-    assert call["model"] == "gemini-2.5-flash"
+    assert call["model"] == "gemini-3.8-flash"
     assert len(call["contents"]) == 8000
     assert factory.call_args.kwargs["api_key"] == "test-explicit-key"
     client.close.assert_called_once()
