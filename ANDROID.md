@@ -11,7 +11,7 @@ Android 8.0（API 26）以上可使用的 **Android WebView 客戶端**，與手
 3. 開啟「PDF 拆分（測試版）」並輸入已部署的 HTTPS 根網址，例如自己的 Render 網址。不能填 GitHub Repository 網址；它不會執行後端。
 4. 選擇 PDF，上傳並拆分；點「下載章節 ZIP」後，使用 Android 系統介面選擇儲存位置。
 
-尚未有公開 HTTPS 後端時，APK 可以安裝與開啟設定，但無法完成線上拆分。APK 不會自動購買或部署主機。Render 付費部署仍需另行確認，方案與費用見 [MOBILE.md](MOBILE.md)。
+目前可填入免費試用後端 `https://pdf-split-app.onrender.com`，閒置後首次連線可能需等待喚醒。上傳後也能選「只產生摘要（不拆分）」，設定頁碼並勾選 Gemini 同意傳送，直接取得文字摘要；此功能由後端網頁提供，不需重裝 APK。APK 不會自動購買或部署主機。Render 付費部署仍需另行確認，方案與費用見 [MOBILE.md](MOBILE.md)。
 
 ## 使用與安全邊界
 

@@ -69,7 +69,7 @@
         }
         message.textContent = '正在檢查 PDF…';
         await postJSON('finish', {id});
-        message.textContent = '上傳完成。請按下方「讀取上傳狀態／更新結果」設定拆分。';
+        message.textContent = '上傳完成。請按下方「讀取上傳狀態／更新結果」選擇拆分或只摘要。';
       } catch (error) {
         message.textContent = error.message || '無法連線，請重新上傳。';
       } finally {
@@ -90,8 +90,10 @@
         download.hidden = data.state !== 'ready';
         upload.disabled = clear.disabled = fileInput.disabled = ['processing', 'downloading'].includes(data.state);
         const labels = {
-          uploaded: '上傳完成。請按下方「讀取上傳狀態／更新結果」設定拆分。',
-          processing: '正在拆分與打包，請保留此頁面…',
+          uploaded: '上傳完成。請按下方「讀取上傳狀態／更新結果」選擇拆分或只摘要。',
+          processing: '正在處理文件，請保留此頁面並更新主介面查看進度…',
+          summarized: '摘要作業結束，原始暫存檔已清除；請更新主介面查看結果。',
+          cancelled: '摘要已取消，暫存檔已清除。',
           ready: 'ZIP 已就緒，請在保留期限內下載。',
           downloading: '下載串流傳輸中…',
           downloaded: '下載串流已送出，伺服器暫存檔已清除。'

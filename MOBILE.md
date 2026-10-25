@@ -4,6 +4,12 @@
 
 另已加入 Android APK 專案、簽章驗證與 CI 產物，安裝方式及驗證邊界見 [ANDROID.md](ANDROID.md)。Android APK 同樣需要可連線的後端；PWA 不受影響。
 
+## 只產生摘要
+
+[開啟網頁試用站](https://pdf-split-app.onrender.com)，上傳 PDF 後，在「處理方式」選「只產生摘要（不拆分）」。選擇頁碼範圍、提供 Gemini API Key 並勾選同意傳送文字，再按「產生文件摘要」。既有 APK 連線到這個網址後也會載入同一套介面，不需重新安裝。
+
+每次最多 50 頁／24,000 字，產生最多 300 字摘要；顯示實際擷取範圍，不能將截取內容當作全文。可複製結果或取消作業；若瀏覽器不允許直接複製，長按選取文字後複製即可。只摘要不建立章節 PDF 或 ZIP，原始暫存檔在作業結束後清除。取消需等待目前請求結束；已送出的 Gemini 請求仍可能計費。詳細限制見 README。
+
 ## 本機啟動
 
 ```bash
@@ -29,7 +35,7 @@ python mobile_server.py
 - 自動化瀏覽器測試以 390 × 844 觸控視窗驗證介面、manifest、Chromium 安裝條件、上傳、拆分、ZIP 下載、伺服器清理、離線開啟。
 - service worker 只快取六個公開介面資源；不快取 PDF、ZIP、API 回應、權杖、摘要或 API Key。Session 權杖只保存在該分頁的 `sessionStorage`；金鑰只保留在表單／當次請求，不寫入 localStorage。
 - PWA 尚未在實體 Android／iPhone 安裝測試。另提供 Android APK 建置流程，詳見 ANDROID.md；未產出 IPA 或進行商店上架。
-- 尚未建立公開 HTTPS 後端。必須完成部署後，才能從手機實際安裝與使用。
+- 已有公開 HTTPS 免費試用入口：<https://pdf-split-app.onrender.com>。免費主機會休眠，請先用小型文件測試；1GB 雲端／手機處理尚未驗證。下方付費 Blueprint 仍只是另一個部署提案，不是試用站的目前方案。
 
 ## 大檔案限制
 

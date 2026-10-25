@@ -19,8 +19,9 @@ from urllib.parse import parse_qs, urlsplit
 from filelock import FileLock, Timeout
 
 from pdf_processor import (
-    CHUNK_BYTES, MAX_UPLOAD_BYTES, PDFError, PDFInfo, TemporaryWorkspace,
+    CHUNK_BYTES, MAX_UPLOAD_BYTES, MAX_SUMMARY_PAGES, PDFError, PDFCancelled, PDFInfo, TemporaryWorkspace,
     bookmark_chapters, fixed_chapters, ensure_space, inspect_pdf, split_pdf,
+    summarize_pdf, validate_summary_range,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -44,6 +45,10 @@ class Session:
     received: int = 0
     info: PDFInfo | None = None
     rows: list[dict] = field(default_factory=list)
+    operation: str = "split"
+    document_summary: dict | None = None
+    progress: dict = field(default_factory=dict)
+    cancel_event: threading.Event = field(default_factory=threading.Event)
     error: str = ""
     touched: float = field(default_factory=time.monotonic)
 
@@ -62,7 +67,9 @@ class Session:
             return {"state": self.state, "filename": self.filename,
                     "received": self.received, "expected": self.expected,
                     "error": self.error, "info": self.info, "rows": list(self.rows),
-                    "upload_id": self.upload_id}
+                    "upload_id": self.upload_id, "operation": self.operation,
+                    "document_summary": dict(self.document_summary) if self.document_summary else None,
+                    "progress": dict(self.progress), "cancel_requested": self.cancel_event.is_set()}
 
 
 class SessionStore:
@@ -102,7 +109,7 @@ class SessionStore:
     @staticmethod
     def _editable(session: Session) -> None:
         if session.state in {"processing", "downloading"}:
-            raise RequestError("目前正在拆分或下載，請待作業結束再上傳或清除。", 409)
+            raise RequestError("目前正在處理或下載，請待作業結束再上傳或清除。", 409)
         if session.state == "expired":
             raise RequestError("工作已到期，請重新整理主介面。", 410)
 
@@ -117,6 +124,10 @@ class SessionStore:
             session.state = "empty"
             session.info = None
             session.rows = []
+            session.document_summary = None
+            session.operation = "split"
+            session.progress = {}
+            session.cancel_event.clear()
             session.error = ""
             session.workspace = TemporaryWorkspace(self.root)
             session.upload_id = secrets.token_urlsafe(16)
@@ -171,15 +182,76 @@ class SessionStore:
             session.cleanup()
             session.info = None
             session.rows = []
+            session.document_summary = None
+            session.progress = {}
+            session.cancel_event.clear()
             session.expected = session.received = 0
             session.state = "empty"
             session.error = ""
             session.touch()
 
+    def cancel_summary(self, session: Session) -> None:
+        with session.lock:
+            if session.state != "processing" or session.operation != "summary":
+                raise RequestError("目前沒有可取消的文件摘要作業。", 409)
+            session.cancel_event.set()
+            session.touched = time.monotonic()  # The worker may already have removed its files.
+
+    def process_summary(self, session: Session, start_page: int, end_page: int, summarize,
+                        expected_upload_id: str, _reserved: bool = False) -> None:
+        if not _reserved and not self._processing.acquire(blocking=False):
+            raise RequestError("其他文件正在處理，請稍後再試。", 409)
+        started = False
+        try:
+            with session.lock:
+                if session.state != ("processing" if _reserved else "uploaded") or expected_upload_id != session.upload_id:
+                    raise RequestError("PDF 已變更或未完成上傳，請重新確認。", 409)
+                validate_summary_range(session.info.page_count, start_page, end_page)
+                session.state = "processing"
+                session.operation = "summary"
+                if not _reserved:
+                    session.cancel_event.clear()
+                session.touch()
+                workspace = session.workspace
+                started = True
+
+            def progress(done, total, stage):
+                with session.lock:
+                    session.progress = {"done": done, "total": total, "stage": stage}
+                    session.touch()
+
+            result = summarize_pdf(workspace.path / "source.pdf", workspace, start_page, end_page,
+                                   summarize, progress=progress, cancelled=session.cancel_event.is_set)
+            with session.lock:
+                if session.cancel_event.is_set():
+                    raise PDFCancelled("摘要已取消。")
+                session.cleanup()
+                session.document_summary = result
+                session.rows = []
+                session.state = "summarized"
+                session.touch()
+        except PDFCancelled:
+            with session.lock:
+                session.cleanup()
+                session.document_summary = None
+                session.progress = {}
+                session.state = "cancelled"
+                session.touch()
+        except BaseException:
+            if started:
+                with session.lock:
+                    session.cleanup()
+                    session.document_summary = None
+                    session.state = "error"
+                    session.error = "摘要未完成；暫存檔已清理，請重新上傳後重試。"
+            raise
+        finally:
+            self._processing.release()
+
     def process(self, session: Session, chapters: list, summarize=None, progress=None,
                 expected_upload_id: str | None = None, _reserved: bool = False) -> None:
         if not _reserved and not self._processing.acquire(blocking=False):
-            raise RequestError("其他工作正在拆分，請稍後再按一次開始拆分。", 409)
+            raise RequestError("其他文件正在處理，請稍後再試。", 409)
         started = False
         try:
             with session.lock:
@@ -188,6 +260,7 @@ class SessionStore:
                 if expected_upload_id is not None and expected_upload_id != session.upload_id:
                     raise RequestError("PDF 已變更，請更新上傳狀態並重新確認章節。", 409)
                 session.state = "processing"
+                session.operation = "split"
                 session.touch()
                 workspace = session.workspace
                 started = True
@@ -215,29 +288,50 @@ class SessionStore:
             if session.state != "uploaded" or options.get("upload_id") != session.upload_id:
                 raise RequestError("上傳內容已變更，請更新狀態後重試。", 409)
             info = session.info
+            operation = options.get("operation", "split")
             mode = options.get("mode", "bookmarks")
-            if mode == "bookmarks":
+            if operation == "summary":
+                start = options.get("start_page", 1)
+                end = options.get("end_page", min(info.page_count, MAX_SUMMARY_PAGES))
+                try:
+                    validate_summary_range(info.page_count, start, end)
+                except PDFError as exc:
+                    raise RequestError(str(exc)) from None
+                chapters = []
+            elif operation != "split":
+                raise RequestError("不支援的處理方式。")
+            elif mode == "bookmarks":
                 chapters = bookmark_chapters(info, int(options.get("depth", 1)))
             elif mode == "fixed":
                 chapters = fixed_chapters(info.page_count, int(options.get("pages", 10)))
             else:
                 raise RequestError("不支援的拆分方式。")
             enabled = options.get("gemini") is True
+            if operation == "summary" and not enabled:
+                raise RequestError("請先勾選啟用 Gemini，才會將所選頁面文字送出以產生摘要。")
             key = options.get("api_key", "")
             if not isinstance(key, str) or len(key) > 512:
                 raise RequestError("API Key 格式錯誤。")
             if enabled and not (key.strip() or os.environ.get("GEMINI_API_KEY", "").strip()):
                 raise RequestError("請輸入 Gemini API Key 或關閉摘要。")
             if not self._processing.acquire(blocking=False):
-                raise RequestError("另一份文件正在拆分，請稍後重試。", 409)
+                raise RequestError("另一份文件正在處理，請稍後重試。", 409)
             upload_id = session.upload_id
             session.state = "processing"
+            session.operation = operation
+            session.document_summary = None
+            session.cancel_event.clear()
+            session.progress = {}
             session.touch()
             def run():
                 try:
                     with GeminiSummarizer(key) as helper:
-                        self.process(session, chapters, summarize=helper.summarize if enabled else None,
-                                     expected_upload_id=upload_id, _reserved=True)
+                        if operation == "summary":
+                            self.process_summary(session, start, end, helper.summarize_document,
+                                                 expected_upload_id=upload_id, _reserved=True)
+                        else:
+                            self.process(session, chapters, summarize=helper.summarize if enabled else None,
+                                         expected_upload_id=upload_id, _reserved=True)
                 except Exception:
                     # process() owns failure cleanup; no request bodies or secrets in logs.
                     pass
@@ -281,6 +375,7 @@ class SessionStore:
             with self._lock:
                 for session in self.sessions.values():
                     with session.lock:
+                        session.cancel_event.set()
                         session.cleanup()
                 self.sessions.clear()
         finally:
@@ -431,6 +526,10 @@ class TransferService:
                     elif action == "clear":
                         store.clear(session)
                         self._json({"ok": True})
+                    elif action == "cancel":
+                        self._body(1024)
+                        store.cancel_summary(session)
+                        self._json({"ok": True}, 202)
                     elif action == "process":
                         data = json.loads(self._body(4096))
                         if not isinstance(data, dict):

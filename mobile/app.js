@@ -20,9 +20,17 @@ async function getSession() {
 }
 function setBusy(value) { busy = value; for (const id of ['upload','clear','split','file']) $(id).disabled = value; }
 function setMode() { $('depth-field').hidden = $('mode').value !== 'bookmarks'; $('pages-field').hidden = $('mode').value !== 'fixed'; }
+function setOperation() {
+  const summary = $('operation').value === 'summary';
+  $('split-options').hidden = summary; $('summary-options').hidden = !summary;
+  $('split').textContent = summary ? '產生文件摘要' : '拆分並打包 ZIP';
+  if (summary) $('gemini-settings').open = true;
+}
+$('operation').addEventListener('change', setOperation);
 $('mode').addEventListener('change', setMode);
 $('file').addEventListener('change', () => { $('filename').textContent = $('file').files[0]?.name || '尚未選擇檔案'; });
 function render(data) {
+  const newUpload = uploadId !== data.upload_id;
   snapshot = data; uploadId = data.upload_id;
   const processing = ['processing','downloading'].includes(data.state);
   for (const id of ['upload','clear','file']) $(id).disabled = processing;
@@ -31,7 +39,14 @@ function render(data) {
   $('result').hidden = !['ready','downloading','downloaded'].includes(data.state);
   $('download').hidden = data.state !== 'ready';
   $('download').href = '/' + token + '/download';
-  const labels = {empty:'選擇檔案即可開始。',uploaded:'上傳完成，請選擇拆分方式。',processing:'正在拆分與打包，請稍候…',ready:'ZIP 已就緒，可以下載。',downloading:'下載傳輸中…',downloaded:'下載串流已送出，伺服器檔案已清除。',uploading:'先前上傳未完成，請重新上傳。'};
+  $('document-result').hidden = data.state !== 'summarized';
+  $('cancel-summary').hidden = data.state !== 'processing' || data.operation !== 'summary';
+  $('cancel-summary').disabled = data.cancel_requested;
+  const labels = {empty:'選擇檔案即可開始。',uploaded:'上傳完成，請選擇處理方式。',processing:'正在拆分與打包，請稍候…',ready:'ZIP 已就緒，可以下載。',downloading:'下載傳輸中…',downloaded:'下載串流已送出，伺服器檔案已清除。',uploading:'先前上傳未完成，請重新上傳。',summarized:'摘要作業結束，原始暫存檔已清除。',cancelled:'摘要已取消，暫存檔已清除；請重新上傳以開始新工作。'};
+  if (data.state === 'processing' && data.operation === 'summary') {
+    const progress = data.progress || {};
+    labels.processing = data.cancel_requested ? '正在取消；完成目前頁面擷取或 Google 請求後停止，已送出請求仍可能計費。' : progress.stage === 'generating' ? '已擷取文字，正在等待 Gemini 產生摘要…' : `正在擷取文字：${progress.done || 0} / ${progress.total || '…'} 頁`;
+  }
   $('status').textContent = data.error || labels[data.state] || '請重新上傳。';
   $('summary-notice').hidden = !data.rows.some(row => String(row['摘要']).startsWith('摘要暫停'));
   if (data.state === 'uploaded') {
@@ -46,8 +61,16 @@ function render(data) {
     $('mode').options[0].disabled = !levels.length;
     if (!levels.length) { $('mode').value = 'fixed'; $('warnings').textContent = '沒有有效書籤，請改用固定頁數拆分。'; }
     $('pages').max = data.page_count;
+    $('summary-start').max = $('summary-end').max = data.page_count;
+    if (newUpload) { $('summary-start').value = 1; $('summary-end').value = Math.min(data.page_count, 50); $('copy-status').textContent = ''; }
     setMode();
+    setOperation();
   }
+  if (data.document_summary) {
+    const result = data.document_summary;
+    $('document-summary').value = result.text;
+    $('summary-coverage').textContent = `選取第 ${result.start_page}–${result.requested_end_page} 頁；實際擷取至第 ${result.end_page} 頁，共 ${result.text_chars.toLocaleString()} 字。` + (result.truncated ? ' 已達文字上限，僅摘要截取的內容。' : '') + (result.unreadable_pages ? ` 有 ${result.unreadable_pages} 頁無法擷取文字。` : '');
+  } else { $('document-summary').value = ''; $('summary-coverage').textContent = ''; }
   $('chapters').replaceChildren(...data.rows.map(row => {
     const item = document.createElement('div'); item.className = 'chapter';
     const title = document.createElement('strong'); title.textContent = row['章節'];
@@ -59,12 +82,12 @@ function render(data) {
 async function poll() {
   if (busy || !token) return;
   try { render(await api('/' + token + '/details')); }
-  catch (error) { if (error.status === 404) { token = ''; sessionStorage.removeItem('pdf-session'); $('settings').hidden = $('result').hidden = true; } $('status').textContent = error.message; }
+  catch (error) { if (error.status === 404) { token = ''; snapshot = null; sessionStorage.removeItem('pdf-session'); $('settings').hidden = $('result').hidden = $('document-result').hidden = $('cancel-summary').hidden = true; $('document-summary').value = ''; } $('status').textContent = error.message; }
 }
 $('upload').addEventListener('click', async () => {
   const file = $('file').files[0];
   if (!file || !file.name.toLowerCase().endsWith('.pdf') || !file.size || file.size > 1024 ** 3) { $('status').textContent = '請選擇大於 0 且不超過 1GB 的 PDF。'; return; }
-  setBusy(true); $('settings').hidden = $('result').hidden = true; $('progress').value = 0;
+  setBusy(true); $('settings').hidden = $('result').hidden = $('document-result').hidden = true; $('document-summary').value = ''; $('progress').value = 0;
   try {
     const base = await getSession();
     const job = await api(base + 'start', {name:file.name, size:file.size});
@@ -81,10 +104,18 @@ $('upload').addEventListener('click', async () => {
 $('split').addEventListener('click', async () => {
   setBusy(true);
   try {
-    const options = {upload_id:uploadId, mode:$('mode').value, depth:Number($('depth').value || 1), pages:Number($('pages').value), gemini:$('gemini').checked, api_key:$('api-key').value};
-    await api('/' + token + '/process', options); $('api-key').value = ''; $('status').textContent = '正在拆分與打包…'; $('settings').hidden = true;
+    const options = {upload_id:uploadId, operation:$('operation').value, start_page:Number($('summary-start').value), end_page:Number($('summary-end').value), mode:$('mode').value, depth:Number($('depth').value || 1), pages:Number($('pages').value), gemini:$('gemini').checked, api_key:$('api-key').value};
+    await api('/' + token + '/process', options); $('api-key').value = ''; $('status').textContent = options.operation === 'summary' ? '正在準備文件摘要…' : '正在拆分與打包…'; $('settings').hidden = true;
   } catch(error) { $('status').textContent = error.message; }
   finally { setBusy(false); }
+});
+$('cancel-summary').addEventListener('click', async () => {
+  try { await api('/' + token + '/cancel', {}); await poll(); }
+  catch(error) { $('status').textContent = error.message; }
+});
+$('copy-summary').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('document-summary').value); $('copy-status').textContent = '摘要已複製。'; }
+  catch(_) { $('document-summary').focus(); $('document-summary').select(); $('copy-status').textContent = '請使用複製選單或長按選取的摘要文字。'; }
 });
 $('clear').addEventListener('click', async () => {
   try { await api('/' + token + '/clear', {}); $('file').value=''; $('filename').textContent='尚未選擇檔案'; $('progress').value=0; await poll(); }

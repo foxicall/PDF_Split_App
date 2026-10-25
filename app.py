@@ -10,7 +10,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from gemini_helper import GEMINI_MODEL, GeminiSummarizer
-from pdf_processor import PDFError, bookmark_chapters, fixed_chapters
+from pdf_processor import PDFError, MAX_SUMMARY_PAGES, bookmark_chapters, fixed_chapters, validate_summary_range
 from transfer_server import RequestError, default_service
 
 
@@ -39,9 +39,9 @@ def transfer_widget(token: str, port: int) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="PDF 書籤拆分工具", page_icon="📚", layout="wide")
-    st.title("📚 PDF 書籤拆分工具")
-    st.write("依書籤或固定頁數拆分 PDF，打包為 ZIP 一次下載。支援最大 1GB（1024MB）。")
+    st.set_page_config(page_title="PDF 拆分與摘要工具", page_icon="📚", layout="wide")
+    st.title("📚 PDF 拆分與摘要工具")
+    st.write("依書籤或固定頁數拆分 PDF，也能不拆分、直接摘要所選頁面。支援最大 1GB（1024MB）。")
     try:
         service = get_service()
         token = st.session_state.get("transfer_token")
@@ -57,18 +57,18 @@ def main() -> None:
 
     with st.sidebar:
         st.subheader("智慧摘要（選用）")
-        use_gemini = st.checkbox("啟用 Gemini 章節摘要", value=False)
+        use_gemini = st.checkbox("啟用 Gemini 摘要並同意傳送文字", value=False)
         api_key = st.text_input("Gemini API Key", type="password", key="gemini_key",
                                 help="留空時使用伺服器環境變數 GEMINI_API_KEY；不會寫入檔案。")
         has_key = bool(api_key.strip() or os.environ.get("GEMINI_API_KEY", "").strip())
         if os.environ.get("GEMINI_API_KEY"):
             st.caption("已設定伺服器環境變數 API Key。")
-        st.caption(f"使用 {GEMINI_MODEL}。啟用後會將每章首頁最多 8,000 個字元傳送至 Google Gemini，可能產生 API 費用；掃描頁面不執行 OCR。")
+        st.caption(f"使用 {GEMINI_MODEL}。啟用後，拆分模式會傳送各章首頁最多 8,000 字至 Google；只摘要模式會傳送所選範圍最多 24,000 字，可能產生 API 費用。不執行 OCR。")
         if use_gemini and not has_key:
             st.warning("尚未提供 API Key；仍可拆分，但不會產生摘要。")
         st.divider()
         st.caption(f"暫存保留期限：{service.store.ttl / 60:g} 分鐘。背景每 30 秒檢查一次。")
-        st.caption("處理完成後只保留 ZIP；重新上傳、清除或下載串流完成後刪除實體檔案。")
+        st.caption("拆分完成後只保留 ZIP；只摘要作業結束後刪除所有實體暫存檔，文字結果保留至工作到期。")
 
     try:
         transfer_widget(session.token, service.port)
@@ -88,12 +88,40 @@ def main() -> None:
         st.error(snapshot["error"] or "工作失敗，請重新上傳。")
         st.stop()
     if state == "processing":
-        st.info("拆分作業進行中，完成後請更新結果。")
+        if snapshot["operation"] == "summary":
+            progress = snapshot["progress"]
+            st.info("正在取消，完成目前頁面擷取或 Gemini 請求後停止。已送出請求仍可能計費。"
+                    if snapshot["cancel_requested"] else "已擷取文字，正在等待 Gemini 摘要…"
+                    if progress.get("stage") == "generating" else
+                    f"正在擷取文字：{progress.get('done', 0)} / {progress.get('total', '…')} 頁。請更新結果查看進度。")
+            if st.button("取消摘要", disabled=snapshot["cancel_requested"]):
+                try:
+                    service.store.cancel_summary(session)
+                except RequestError as exc:
+                    st.info(str(exc))
+                st.rerun()
+        else:
+            st.info("拆分作業進行中，完成後請更新結果。")
+        st.stop()
+    if state == "cancelled":
+        st.info("摘要已取消，暫存檔已清除；請重新上傳以開始新工作。")
         st.stop()
 
     if snapshot["info"]:
         info = snapshot["info"]
         st.caption(f"檔案：{snapshot['filename']} ｜ {info.page_count:,} 頁 ｜ {len(info.bookmarks):,} 個有效書籤")
+    if state == "summarized":
+        result = snapshot["document_summary"]
+        st.subheader("文件摘要結果")
+        st.caption(f"選取第 {result['start_page']}–{result['requested_end_page']} 頁；"
+                   f"實際擷取至第 {result['end_page']} 頁，共 {result['text_chars']:,} 字。")
+        if result["truncated"]:
+            st.warning("已達文字上限，僅摘要截取的內容，不代表完整所選範圍。")
+        if result["unreadable_pages"]:
+            st.warning(f"有 {result['unreadable_pages']} 頁無法擷取文字。")
+        st.text_area("摘要內容", result["text"], height=220)
+        st.info("原始 PDF 暫存已清除，沒有建立章節 PDF 或 ZIP。請複製保存結果；需要再次處理時請重新上傳。")
+        st.stop()
     if state in {"ready", "downloading", "downloaded"}:
         if state == "ready":
             st.success("拆分完成！原始 PDF 與章節中間檔已清除，請使用上方「下載章節 ZIP」。")
@@ -110,6 +138,26 @@ def main() -> None:
         st.stop()
     for warning in info.warnings:
         st.warning(warning)
+    operation = st.radio("處理方式", ["拆分 PDF 並打包 ZIP", "只產生摘要（不拆分）"], horizontal=True)
+    if operation == "只產生摘要（不拆分）":
+        start = st.number_input("摘要起始頁", min_value=1, max_value=info.page_count, value=1, step=1)
+        end = st.number_input("摘要結束頁", min_value=1, max_value=info.page_count,
+                              value=min(info.page_count, MAX_SUMMARY_PAGES), step=1)
+        st.caption("每次最多 50 頁，依頁序擷取最多 24,000 字，產生最多 300 字摘要；只摘要所選範圍，不代表整份文件。")
+        if not use_gemini or not has_key:
+            st.info("請在側欄提供 API Key 並勾選啟用 Gemini，才會傳送文字以產生摘要。")
+        if st.button("產生文件摘要", type="primary", disabled=not use_gemini or not has_key):
+            try:
+                validate_summary_range(info.page_count, int(start), int(end))
+                service.store.start_mobile_process(session, {
+                    "operation": "summary", "upload_id": snapshot["upload_id"],
+                    "start_page": int(start), "end_page": int(end), "gemini": True, "api_key": api_key,
+                })
+            except PDFError as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
+        st.stop()
     if not info.bookmarks:
         st.warning("這份 PDF 沒有有效的內建書籤，可改用固定頁數拆分。")
         mode = "固定頁數"

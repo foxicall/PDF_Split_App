@@ -22,6 +22,8 @@ CHUNK_BYTES = 4 * MIB
 DISK_RESERVE_BYTES = 256 * MIB
 PAGE_BATCH_SIZE = 8
 MAX_CHAPTERS = 10_000
+MAX_SUMMARY_PAGES = 50
+MAX_SUMMARY_CHARS = 24_000
 _PDF_LOCK = threading.RLock()  # PyMuPDF must not run concurrently in different threads.
 
 
@@ -35,6 +37,10 @@ def _serialized_pdf(function):
 
 class PDFError(Exception):
     """An error safe to display to the user."""
+
+
+class PDFCancelled(PDFError):
+    """The user cancelled an in-flight summary."""
 
 
 def ensure_space(directory: Path, needed: int = CHUNK_BYTES) -> None:
@@ -89,6 +95,75 @@ class Chapter:
 class SplitResult:
     archive: Path
     rows: list[dict] = field(default_factory=list)
+
+
+def validate_summary_range(page_count: int, start_page: int, end_page: int) -> None:
+    if (type(start_page) is not int or type(end_page) is not int
+            or not 1 <= start_page <= end_page <= page_count):
+        raise PDFError("摘要頁碼範圍無效，請輸入文件內的起始頁與結束頁。")
+    if end_page - start_page + 1 > MAX_SUMMARY_PAGES:
+        raise PDFError(f"每次摘要最多 {MAX_SUMMARY_PAGES} 頁，請縮小頁碼範圍。")
+
+
+@_serialized_pdf
+def summarize_pdf(source_path: Path, workspace: TemporaryWorkspace, start_page: int,
+                  end_page: int, summarize: Callable[[str], str], progress=None,
+                  cancelled: Callable[[], bool] | None = None) -> dict:
+    """Extract a bounded page range, make one summary, and remove all source files."""
+    def check_cancel():
+        if cancelled and cancelled():
+            raise PDFCancelled("摘要已取消；原始暫存檔已清除。")
+
+    parts, used, last_page, truncated, unreadable = [], 0, start_page, False, 0
+    try:
+        check_cancel()
+        with fitz.open(source_path) as source:
+            if source.needs_pass or not source.is_pdf:
+                raise PDFError("PDF 無法讀取，請先解除加密並確認格式。")
+            validate_summary_range(source.page_count, start_page, end_page)
+            for number in range(start_page, end_page + 1):
+                check_cancel()
+                page = source.load_page(number - 1)
+                try:
+                    text = page.get_text("text").strip()
+                except (RuntimeError, ValueError):
+                    text = ""
+                    unreadable += 1
+                finally:
+                    del page
+                last_page = number
+                if text:
+                    separator = "\n" if parts else ""
+                    remaining = MAX_SUMMARY_CHARS - used
+                    piece = (separator + text)[:remaining]
+                    parts.append(piece)
+                    used += len(piece)
+                    truncated = len(separator) + len(text) > remaining
+                workspace.touch()
+                fitz.TOOLS.store_shrink(100)
+                if progress:
+                    progress(number - start_page + 1, end_page - start_page + 1, "extracting")
+                if used >= MAX_SUMMARY_CHARS:
+                    truncated = truncated or number < end_page
+                    break
+        # Close the file before the network call. Keep only a bounded text excerpt.
+        check_cancel()
+        text = "".join(parts)
+        if text:
+            if progress:
+                progress(last_page - start_page + 1, end_page - start_page + 1, "generating")
+            summary = summarize(text)
+        else:
+            summary = "所選頁面無可擷取文字（可能為圖片或空白頁；未執行 OCR）"
+        check_cancel()
+        return {"text": summary, "start_page": start_page, "end_page": last_page,
+                "requested_end_page": end_page, "text_chars": used,
+                "truncated": truncated, "unreadable_pages": unreadable}
+    finally:
+        try:
+            workspace.cleanup()
+        finally:
+            fitz.TOOLS.store_shrink(100)
 
 
 @_serialized_pdf
