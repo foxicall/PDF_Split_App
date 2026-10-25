@@ -4,15 +4,43 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import random
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 
 LOGGER = logging.getLogger(__name__)
 GEMINI_MODEL = "gemini-3.8-flash"
 SUMMARY_STYLES = {"brief": ("精簡", 500), "standard": ("標準", 1500), "detailed": ("詳細", 3000)}
+RETRY_DELAYS = (2, 4)  # Shared across the whole action, not reset for every chunk.
+MAX_AUTO_WAIT = 30
+
+
+def retry_after_seconds(error: Exception) -> float:
+    headers = getattr(getattr(error, "response", None), "headers", {})
+    value = headers.get("Retry-After", "") if hasattr(headers, "get") else ""
+    if not isinstance(value, str) or len(value) > 100:
+        return 0
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            seconds = (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds()
+        except (ValueError, TypeError, OverflowError):
+            return 0
+    # Invalid/infinite values must not induce an unbounded wait or early retry.
+    return min(86400, max(0, seconds)) if seconds == seconds else 0
 
 
 class GeminiSummaryError(Exception):
     """A fixed, safe diagnostic; a failed chunk must never be synthesized as content."""
+
+    def __init__(self, message: str, retryable: bool = False, retry_after: float = 0):
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
+        self.partial_result = None
 
 
 def _failure_info(error: Exception) -> tuple[str, str]:
@@ -67,10 +95,17 @@ def _failure_info(error: Exception) -> tuple[str, str]:
 
 
 class GeminiSummarizer:
-    def __init__(self, api_key: str = ""):
+    def __init__(self, api_key: str = "", *, retry_transient: bool = False,
+                 cancel_event=None, on_retry=None, on_request=None):
         self.api_key = api_key.strip() or os.environ.get("GEMINI_API_KEY", "").strip()
         self._client = None
         self._failure = ""
+        self._failure_retryable = False
+        self._failure_retry_after = 0
+        self._retry_delays = iter(RETRY_DELAYS if retry_transient else ())
+        self._cancel = cancel_event or threading.Event()
+        self._on_retry = on_retry
+        self._on_request = on_request
 
     def __enter__(self) -> "GeminiSummarizer":
         return self
@@ -98,8 +133,30 @@ class GeminiSummarizer:
             raise GeminiSummaryError("摘要輸入超過單次請求上限；作業已停止，未傳送截短內容。")
         result = self._generate(text, input_limit=24_000, output_limit=limit, markdown=True)
         if self._failure or not self.api_key or result == "模型未回傳摘要":
-            raise GeminiSummaryError(self._failure or result)
+            raise GeminiSummaryError(self._failure or result, self._failure_retryable, self._failure_retry_after)
         return result
+
+    def _request(self, **kwargs):
+        while True:
+            if self._cancel.is_set():
+                raise GeminiSummaryError("摘要已取消。")
+            if self._on_request:
+                self._on_request()
+            try:
+                return self._client.models.generate_content(**kwargs)
+            except Exception as error:
+                # Never auto-retry invalid keys, denied models, quota, or ambiguous timeouts.
+                delay = next(self._retry_delays, None) if getattr(error, "code", None) in {500, 502, 503, 504} else None
+                if delay is None:
+                    raise
+                delay = max(delay + random.uniform(0, 0.5), retry_after_seconds(error))
+                if delay > MAX_AUTO_WAIT:
+                    raise  # Pause rather than retrying sooner than Retry-After.
+                LOGGER.warning("Gemini transient retry: GEMINI_UNAVAILABLE")
+                if self._on_retry:
+                    self._on_retry(delay)
+                if self._cancel.wait(delay):
+                    raise GeminiSummaryError("摘要已取消。") from None
 
     def _generate(self, text: str, input_limit: int, output_limit: int, markdown: bool = False) -> str:
         if not text.strip():
@@ -119,7 +176,7 @@ class GeminiSummarizer:
                     options["retry_options"] = types.HttpRetryOptions(attempts=1)
                 self._client = genai.Client(api_key=self.api_key,
                                            http_options=types.HttpOptions(**options))
-            response = self._client.models.generate_content(
+            response = self._request(
                 model=GEMINI_MODEL,
                 contents=text[:input_limit],
                 config=types.GenerateContentConfig(
@@ -145,9 +202,15 @@ class GeminiSummarizer:
                 return summary[:output_limit - len(notice)] + notice
             # Enforce the limit even if the model ignores the prompt.
             return summary if len(summary) <= output_limit else summary[:output_limit - 1] + "…"
+        except GeminiSummaryError:
+            raise
         except Exception as error:
             # Do not expose exception strings: SDK errors may contain request data or credentials.
             code, message = _failure_info(error)
+            self._failure_retryable = code in {"GEMINI_UNAVAILABLE", "GEMINI_TIMEOUT", "GEMINI_NETWORK", "GEMINI_QUOTA"}
+            self._failure_retry_after = retry_after_seconds(error) if self._failure_retryable else 0
             self._failure = f"摘要暫停 [{code}]：{message}"
-            LOGGER.warning("Gemini summary paused: %s", code)
+            http_status = getattr(error, "code", None)
+            LOGGER.warning("Gemini summary paused: %s http=%s", code,
+                           http_status if type(http_status) is int and 100 <= http_status <= 599 else "unknown")
             return self._failure

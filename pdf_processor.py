@@ -6,6 +6,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import unicodedata
 import zipfile
 from dataclasses import dataclass, field
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Callable
 
 import fitz
+
+from gemini_helper import GeminiSummaryError
 
 MIB = 1024 * 1024
 MAX_UPLOAD_BYTES = 1024 * MIB
@@ -109,7 +112,8 @@ def validate_summary_range(page_count: int, start_page: int, end_page: int) -> N
 def summarize_pdf(source_path: Path, workspace: TemporaryWorkspace, start_page: int,
                   end_page: int, summarize: Callable[[str], str], progress=None,
                   cancelled: Callable[[], bool] | None = None, combine=None,
-                  summary_style: str = "detailed", allow_multiple_requests: bool = True) -> dict:
+                  summary_style: str = "detailed", allow_multiple_requests: bool = True,
+                  checkpoint: dict | None = None, retain_for_retry: bool = False) -> dict:
     """Spool bounded chunks, summarize every extracted page, then synthesize once.
 
     Preflight the entire range before API calls. Oversize ranges fail explicitly;
@@ -119,6 +123,9 @@ def summarize_pdf(source_path: Path, workspace: TemporaryWorkspace, start_page: 
         if cancelled and cancelled():
             raise PDFCancelled("摘要已取消；原始暫存檔已清除。")
 
+    resumable = checkpoint is not None
+    checkpoint = checkpoint if checkpoint is not None else {}
+    preserve = False
     chunks, buffer, used, first, last = [], "", 0, start_page, start_page
     blank_pages, unreadable_pages = [], []
 
@@ -132,51 +139,60 @@ def summarize_pdf(source_path: Path, workspace: TemporaryWorkspace, start_page: 
 
     try:
         check_cancel()
-        with _PDF_LOCK, fitz.open(source_path) as source:
-            if source.needs_pass or not source.is_pdf:
-                raise PDFError("PDF 無法讀取，請先解除加密並確認格式。")
-            validate_summary_range(source.page_count, start_page, end_page)
-            for number in range(start_page, end_page + 1):
-                check_cancel()
-                page = source.load_page(number - 1)
-                try:
-                    text = page.get_text("text").strip()
-                except (RuntimeError, ValueError):
-                    text = ""
-                    unreadable_pages.append(number)
-                finally:
-                    del page
-                if not text and number not in unreadable_pages:
-                    blank_pages.append(number)
-                if text:
-                    text = ("\n" if used else "") + text
-                    if used + len(text) > MAX_SUMMARY_CHARS * MAX_SUMMARY_CHUNKS:
-                        raise PDFError("所選範圍超過 480,000 字元（20 段）上限；尚未呼叫 Gemini。"
-                                       "請重新上傳並縮小頁碼範圍，不會只摘要前面部分。")
-                    used += len(text)
-                    offset = 0
-                    while offset < len(text):
-                        check_cancel()
-                        if not buffer:
-                            first = number
-                        take = min(MAX_SUMMARY_CHARS - len(buffer), len(text) - offset)
-                        buffer += text[offset:offset + take]
-                        last = number
-                        offset += take
-                        if len(buffer) == MAX_SUMMARY_CHARS:
-                            flush()
-                workspace.touch()
-                fitz.TOOLS.store_shrink(100)
-                if progress:
-                    progress(number - start_page + 1, end_page - start_page + 1, "extracting")
-            if buffer:
-                flush()
-        # The PDF is closed before generation; only one bounded chunk is read at a time.
-        check_cancel()
-        if len(chunks) > 1 and not allow_multiple_requests:
-            raise PDFError(f"此範圍需要 {len(chunks) + 1} 次 Gemini 請求；尚未呼叫 API。"
-                           "請重新整理介面、重新上傳並勾選同意分段與整合請求。")
-        parts = []
+        if not checkpoint.get("prepared"):
+            with _PDF_LOCK, fitz.open(source_path) as source:
+                if source.needs_pass or not source.is_pdf:
+                    raise PDFError("PDF 無法讀取，請先解除加密並確認格式。")
+                validate_summary_range(source.page_count, start_page, end_page)
+                for number in range(start_page, end_page + 1):
+                    check_cancel()
+                    page = source.load_page(number - 1)
+                    try:
+                        text = page.get_text("text").strip()
+                    except (RuntimeError, ValueError):
+                        text = ""
+                        unreadable_pages.append(number)
+                    finally:
+                        del page
+                    if not text and number not in unreadable_pages:
+                        blank_pages.append(number)
+                    if text:
+                        text = ("\n" if used else "") + text
+                        if used + len(text) > MAX_SUMMARY_CHARS * MAX_SUMMARY_CHUNKS:
+                            raise PDFError("所選範圍超過 480,000 字元（20 段）上限；尚未呼叫 Gemini。"
+                                           "請重新上傳並縮小頁碼範圍，不會只摘要前面部分。")
+                        used += len(text)
+                        offset = 0
+                        while offset < len(text):
+                            check_cancel()
+                            if not buffer:
+                                first = number
+                            take = min(MAX_SUMMARY_CHARS - len(buffer), len(text) - offset)
+                            buffer += text[offset:offset + take]
+                            last = number
+                            offset += take
+                            if len(buffer) == MAX_SUMMARY_CHARS:
+                                flush()
+                    workspace.touch()
+                    fitz.TOOLS.store_shrink(100)
+                    if progress:
+                        progress(number - start_page + 1, end_page - start_page + 1, "extracting")
+                if buffer:
+                    flush()
+            # The PDF is closed before generation; only one bounded chunk is read at a time.
+            check_cancel()
+            if len(chunks) > 1 and not allow_multiple_requests:
+                raise PDFError(f"此範圍需要 {len(chunks) + 1} 次 Gemini 請求；尚未呼叫 API。"
+                               "請重新整理介面、重新上傳並勾選同意分段與整合請求。")
+            source_path.unlink(missing_ok=True)
+            (workspace.path / ".text-expiry").write_text(str(time.time() + 600), encoding="ascii")
+            checkpoint.update(prepared=True, chunks=chunks, used=used, blank_pages=blank_pages,
+                              unreadable_pages=unreadable_pages, parts=[], start_page=start_page,
+                              end_page=end_page, summary_style=summary_style, retain_for_retry=retain_for_retry)
+        else:
+            chunks, used = checkpoint["chunks"], checkpoint["used"]
+            blank_pages, unreadable_pages = checkpoint["blank_pages"], checkpoint["unreadable_pages"]
+        parts = checkpoint["parts"]
         final = combine or summarize
         if not chunks:
             summary = "所選頁面無可擷取文字（可能為圖片或空白頁；未執行 OCR）"
@@ -187,12 +203,15 @@ def summarize_pdf(source_path: Path, workspace: TemporaryWorkspace, start_page: 
             check_cancel()
         else:
             for index, (path, first_page, last_page) in enumerate(chunks, 1):
+                if index <= len(parts):
+                    continue
                 check_cancel()
                 if progress:
                     progress(index - 1, len(chunks) + 1, "summarizing")
                 part = summarize(path.read_text(encoding="utf-8"))
                 check_cancel()
                 parts.append({"start_page": first_page, "end_page": last_page, "text": part})
+                path.unlink(missing_ok=True)
                 workspace.touch()
             notes = "\n\n".join(f"第 {i} 段（第 {p['start_page']}–{p['end_page']} 頁）\n{p['text']}"
                                   for i, p in enumerate(parts, 1))
@@ -207,9 +226,21 @@ def summarize_pdf(source_path: Path, workspace: TemporaryWorkspace, start_page: 
                 "blank_pages": blank_pages, "chunk_count": len(chunks), "parts": parts,
                 "summary_style": summary_style,
                 "api_requests": len(chunks) + (1 if len(chunks) > 1 else 0)}
+    except GeminiSummaryError as error:
+        check_cancel()  # Cancellation wins even if the in-flight request fails.
+        preserve = resumable and retain_for_retry and error.retryable and checkpoint.get("prepared", False)
+        if checkpoint.get("parts"):
+            error.partial_result = {"partial": True, "text": "尚未產生完整整合摘要；以下僅保留已完成段落，不能視為整份文件摘要。",
+                "start_page": start_page, "end_page": end_page, "requested_end_page": end_page,
+                "text_chars": used, "chunk_count": len(chunks), "summary_style": summary_style,
+                "api_requests": 0, "parts": list(checkpoint["parts"]), "blank_pages": blank_pages,
+                "unreadable_pages": len(unreadable_pages), "unreadable_page_numbers": unreadable_pages}
+        raise
     finally:
         try:
-            workspace.cleanup()
+            if not preserve:
+                workspace.cleanup()
+                checkpoint.clear()
         finally:
             with _PDF_LOCK:
                 fitz.TOOLS.store_shrink(100)

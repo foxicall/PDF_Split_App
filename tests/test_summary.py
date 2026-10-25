@@ -33,7 +33,7 @@ def test_summary_reads_selected_pages_without_split_or_zip(tmp_path, make_pdf, m
     source = workspace.path / 'source.pdf'
     shutil.copyfile(make_pdf(pages=5), source)
     def generate(text):
-        assert sorted(p.name for p in workspace.path.iterdir()) == ['.lease', 'source.pdf', 'summary-00.txt']
+        assert sorted(p.name for p in workspace.path.iterdir()) == ['.lease', '.text-expiry', 'summary-00.txt']
         assert 'Page 2' in text and 'Page 4' in text
         assert 'Page 1' not in text and 'Page 5' not in text
         return '所選頁面摘要'

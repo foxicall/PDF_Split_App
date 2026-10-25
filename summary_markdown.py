@@ -17,12 +17,14 @@ def summary_markdown(result: dict, filename: str) -> str:
     source = re.sub(r"[\r\n\t]", " ", filename)[:255]
     source = re.sub(r"([\\`*_{}\[\]()<>#!|])", r"\\\1", source)
     style, limit = SUMMARY_STYLES[result.get("summary_style", "detailed")]
-    sections = ["# PDF 文件摘要", f"- 來源：{source}",
+    sections = ["# PDF 文件摘要" + ("（未完成／部分結果）" if result.get("partial") else ""), f"- 來源：{source}",
                 f"- 選取／檢查範圍：第 {result['start_page']}–{result['requested_end_page']} 頁",
                 f"- 可擷取文字：{result['text_chars']:,} 字元；{result['chunk_count']} 段",
                 f"- 摘要長度：{style}（整合摘要上限 {limit:,} 字元）",
-                f"- 模型：{GEMINI_MODEL}；生成請求：{result['api_requests']} 次",
+                f"- 模型：{GEMINI_MODEL}；請求嘗試（含重試）：{result['api_requests']} 次",
                 "", "> 僅摘要所選範圍內可擷取的文字；圖片、圖表與掃描內容未執行 OCR，並非全文轉錄。"]
+    if result.get("partial"):
+        sections.extend(["", f"> 摘要暫停：僅完成 {len(result['parts'])} / {result['chunk_count']} 段，尚未產生完整整合摘要。下方只有已完成段落的摘要，請依各段頁碼判讀；其他內容未納入。"])
     if result.get("blank_pages"):
         sections.append("> 無可擷取文字的頁面：" + "、".join(map(str, result["blank_pages"])))
     if result.get("unreadable_page_numbers"):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import json
 import logging
+import math
 import os
 import secrets
 import shutil
@@ -49,6 +50,10 @@ class Session:
     rows: list[dict] = field(default_factory=list)
     operation: str = "split"
     document_summary: dict | None = None
+    summary_checkpoint: dict = field(default_factory=dict)
+    summary_requests: int = 0
+    retry_not_before: float = 0
+    retry_expires: float = 0
     progress: dict = field(default_factory=dict)
     cancel_event: threading.Event = field(default_factory=threading.Event)
     error: str = ""
@@ -63,6 +68,9 @@ class Session:
         if self.workspace:
             self.workspace.cleanup()
             self.workspace = None
+        self.summary_checkpoint.clear()
+        self.retry_not_before = 0
+        self.retry_expires = 0
 
     def snapshot(self) -> dict:
         with self.lock:
@@ -71,7 +79,26 @@ class Session:
                     "error": self.error, "info": self.info, "rows": list(self.rows),
                     "upload_id": self.upload_id, "operation": self.operation,
                     "document_summary": dict(self.document_summary) if self.document_summary else None,
-                    "progress": dict(self.progress), "cancel_requested": self.cancel_event.is_set()}
+                    "progress": dict(self.progress), "cancel_requested": self.cancel_event.is_set(),
+                    "summary_requests": self.summary_requests,
+                    "retry_after_seconds": max(0, math.ceil(self.retry_not_before - time.monotonic())),
+                    "retry_retention_seconds": max(0, math.ceil(self.retry_expires - time.monotonic())),
+                    "resume_completed": len(self.summary_checkpoint.get("parts", [])),
+                    "resume_chunks": len(self.summary_checkpoint.get("chunks", []))}
+
+    def export_summary(self) -> dict:
+        with self.lock:
+            if self.state in {"summarized", "summary_partial"} and self.document_summary is not None:
+                return dict(self.document_summary)
+            cp = self.summary_checkpoint
+            if self.state == "summary_paused" and cp.get("parts"):
+                return {"partial": True, "text": "尚未產生完整整合摘要；以下僅保留已完成段落，不能視為整份文件摘要。",
+                        "start_page": cp["start_page"], "requested_end_page": cp["end_page"],
+                        "text_chars": cp["used"], "chunk_count": len(cp["chunks"]),
+                        "summary_style": cp["summary_style"], "api_requests": self.summary_requests,
+                        "blank_pages": cp["blank_pages"], "unreadable_page_numbers": cp["unreadable_pages"],
+                        "parts": list(cp["parts"])}
+            raise RequestError("摘要尚未完成、沒有已完成段落、已清除或已到期。", 409)
 
 
 class SessionStore:
@@ -127,6 +154,7 @@ class SessionStore:
             session.info = None
             session.rows = []
             session.document_summary = None
+            session.summary_requests = 0
             session.operation = "split"
             session.progress = {}
             session.cancel_event.clear()
@@ -194,6 +222,13 @@ class SessionStore:
 
     def cancel_summary(self, session: Session) -> None:
         with session.lock:
+            if session.state == "summary_paused":
+                session.cleanup()
+                session.state = "cancelled"
+                session.error = ""
+                session.progress = {}
+                session.touch()
+                return
             if session.state != "processing" or session.operation != "summary":
                 raise RequestError("目前沒有可取消的文件摘要作業。", 409)
             session.cancel_event.set()
@@ -201,7 +236,8 @@ class SessionStore:
 
     def process_summary(self, session: Session, start_page: int, end_page: int, summarize,
                         expected_upload_id: str, _reserved: bool = False, combine=None,
-                        summary_style: str = "detailed", allow_multiple_requests: bool = False) -> None:
+                        summary_style: str = "detailed", allow_multiple_requests: bool = False,
+                        retain_for_retry: bool = False) -> None:
         if not _reserved and not self._processing.acquire(blocking=False):
             raise RequestError("其他文件正在處理，請稍後再試。", 409)
         started = False
@@ -226,11 +262,13 @@ class SessionStore:
             result = summarize_pdf(workspace.path / "source.pdf", workspace, start_page, end_page,
                                    summarize, progress=progress, cancelled=session.cancel_event.is_set,
                                    combine=combine, summary_style=summary_style,
-                                   allow_multiple_requests=allow_multiple_requests)
+                                   allow_multiple_requests=allow_multiple_requests,
+                                   checkpoint=session.summary_checkpoint, retain_for_retry=retain_for_retry)
             with session.lock:
                 if session.cancel_event.is_set():
                     raise PDFCancelled("摘要已取消。")
                 session.cleanup()
+                result["api_requests"] = session.summary_requests
                 session.document_summary = result
                 session.rows = []
                 session.state = "summarized"
@@ -242,7 +280,33 @@ class SessionStore:
                 session.progress = {}
                 session.state = "cancelled"
                 session.touch()
-        except (PDFError, GeminiSummaryError) as exc:
+        except GeminiSummaryError as exc:
+            if started:
+                with session.lock:
+                    session.document_summary = None
+                    if session.cancel_event.is_set():
+                        session.cleanup()
+                        session.state = "cancelled"
+                        session.error = ""
+                    elif exc.retryable and session.summary_checkpoint.get("prepared") and (not session.retry_expires or time.monotonic() < session.retry_expires):
+                        session.state = "summary_paused"
+                        session.error = str(exc) + " 原始 PDF 已刪除；你已選擇暫存未完成文字，可按「接續重試」或立即清除。"
+                        if not session.retry_expires:
+                            session.retry_expires = time.monotonic() + min(self.ttl, 600)
+                        (session.workspace.path / ".text-expiry").write_text(
+                            str(time.time() + max(0, session.retry_expires - time.monotonic())), encoding="ascii")
+                        session.retry_not_before = time.monotonic() + exc.retry_after
+                        session.touch()
+                    else:
+                        session.cleanup()
+                        session.document_summary = exc.partial_result
+                        if session.document_summary:
+                            session.document_summary["api_requests"] = session.summary_requests
+                        session.state = "summary_partial" if exc.partial_result else "error"
+                        session.error = str(exc) + (" 原文暫存已清除；已完成段落可下載，再次摘要需重新上傳。"
+                            if exc.partial_result else " 暫存已清除；請重新上傳後重試。")
+            raise
+        except PDFError as exc:
             if started:
                 with session.lock:
                     session.cleanup()
@@ -293,22 +357,30 @@ class SessionStore:
         finally:
             self._processing.release()
 
-    def start_mobile_process(self, session: Session, options: dict) -> None:
+    def start_mobile_process(self, session: Session, options: dict, *, resume: bool = False) -> None:
         """Reserve the single processing slot before acknowledging a background task."""
         from gemini_helper import GeminiSummarizer
 
         with session.lock:
-            if session.state != "uploaded" or options.get("upload_id") != session.upload_id:
+            if session.state != ("summary_paused" if resume else "uploaded") or options.get("upload_id") != session.upload_id:
                 raise RequestError("上傳內容已變更，請更新狀態後重試。", 409)
+            if resume and (time.monotonic() - session.touched >= self.ttl or time.monotonic() >= session.retry_expires):
+                session.cleanup()
+                session.state = "expired"
+                raise RequestError("摘要暫存已到期，請重新上傳。", 410)
+            if resume and time.monotonic() < session.retry_not_before:
+                remaining = math.ceil(session.retry_not_before - time.monotonic())
+                raise RequestError(f"Google 要求等待；請至少 {remaining} 秒後再接續。", 429)
             info = session.info
-            operation = options.get("operation", "split")
+            operation = "summary" if resume else options.get("operation", "split")
             mode = options.get("mode", "bookmarks")
             if operation == "summary":
-                style = options.get("summary_style", "detailed")
+                settings = session.summary_checkpoint if resume else options
+                style = settings.get("summary_style", "detailed")
                 if not isinstance(style, str) or style not in SUMMARY_STYLES:
                     raise RequestError("請選擇精簡、標準或詳細摘要。")
-                start = options.get("start_page", 1)
-                end = options.get("end_page", min(info.page_count, MAX_SUMMARY_PAGES))
+                start = settings.get("start_page", 1)
+                end = settings.get("end_page", min(info.page_count, MAX_SUMMARY_PAGES))
                 try:
                     validate_summary_range(info.page_count, start, end)
                 except PDFError as exc:
@@ -338,15 +410,34 @@ class SessionStore:
             session.document_summary = None
             session.cancel_event.clear()
             session.progress = {}
+            session.error = ""
+            if not resume:
+                session.summary_requests = 0
             session.touch()
+            def on_request():
+                with session.lock:
+                    session.summary_requests += 1
+                    if session.progress.get("stage") == "retry_wait":
+                        session.progress["stage"] = "requesting"
+                    session.touch()
+
+            def on_retry(delay):
+                with session.lock:
+                    session.progress.update(stage="retry_wait", wait_seconds=math.ceil(delay))
+                    session.touch()
+
             def run():
                 try:
-                    with GeminiSummarizer(key) as helper:
+                    with GeminiSummarizer(key, retry_transient=operation == "summary" and options.get("retry_transient") is True,
+                                          cancel_event=session.cancel_event if operation == "summary" else None,
+                                          on_retry=on_retry if operation == "summary" else None,
+                                          on_request=on_request if operation == "summary" else None) as helper:
                         if operation == "summary":
                             self.process_summary(session, start, end, helper.summarize_chunk,
                                                  expected_upload_id=upload_id, _reserved=True,
                                                  combine=lambda text: helper.summarize_document(text, style),
                                                  summary_style=style,
+                                                 retain_for_retry=settings.get("retain_for_retry") is True,
                                                  allow_multiple_requests=options.get("allow_multiple_requests") is True)
                         else:
                             self.process(session, chapters, summarize=helper.summarize if enabled else None,
@@ -358,7 +449,7 @@ class SessionStore:
             try:
                 worker.start()
             except BaseException:
-                session.state = "uploaded"
+                session.state = "summary_paused" if resume else "uploaded"
                 self._processing.release()
                 raise
 
@@ -368,7 +459,8 @@ class SessionStore:
                 if not session.lock.acquire(blocking=False):
                     continue
                 try:
-                    if session.state not in {"processing", "downloading"} and time.monotonic() - session.touched > self.ttl:
+                    if session.state not in {"processing", "downloading"} and (time.monotonic() - session.touched > self.ttl
+                            or (session.state == "summary_paused" and time.monotonic() >= session.retry_expires)):
                         session.cleanup()
                         session.state = "expired"
                         del self.sessions[token]
@@ -384,9 +476,14 @@ class SessionStore:
                 try:
                     lease = path / ".lease"
                     modified = lease.stat().st_mtime if lease.exists() else path.stat().st_mtime
-                    if time.time() - modified > self.ttl:
+                    expiry_file = path / ".text-expiry"
+                    try:
+                        text_expired = expiry_file.exists() and time.time() >= float(expiry_file.read_text(encoding="ascii"))
+                    except ValueError:
+                        text_expired = False  # Corrupt expiry markers still use the normal lease TTL.
+                    if text_expired or time.time() - modified > self.ttl:
                         shutil.rmtree(path)
-                except OSError:
+                except (OSError, ValueError):
                     LOGGER.warning("過期暫存目錄清理失敗，將於下一輪重試。")
 
     def close(self) -> None:
@@ -549,11 +646,11 @@ class TransferService:
                         self._body(1024)
                         store.cancel_summary(session)
                         self._json({"ok": True}, 202)
-                    elif action == "process":
+                    elif action in {"process", "retry-summary"}:
                         data = json.loads(self._body(4096))
                         if not isinstance(data, dict):
                             raise RequestError("拆分設定格式錯誤。")
-                        store.start_mobile_process(session, data)
+                        store.start_mobile_process(session, data, resume=action == "retry-summary")
                         self._json({"ok": True}, 202)
                     else:
                         raise RequestError("找不到此操作。", 404)
@@ -604,10 +701,11 @@ class TransferService:
                         self._json(snapshot)
                     elif action == "summary.md":
                         with session.lock:
-                            if session.state != "summarized" or session.document_summary is None:
-                                raise RequestError("摘要尚未完成、已清除或已到期。", 409)
-                            body = summary_markdown(session.document_summary, session.filename).encode("utf-8")
+                            result = session.export_summary()
+                            body = summary_markdown(result, session.filename).encode("utf-8")
                             filename = summary_filename(session.filename)
+                            if result.get("partial"):
+                                filename = filename[:-3] + "_部分.md"
                         self._headers(200, "text/markdown; charset=utf-8", len(body))
                         self.send_header("Content-Disposition", "attachment; filename=summary.md; filename*=UTF-8''" + quote(filename))
                         self.end_headers()

@@ -64,12 +64,12 @@ def main() -> None:
         has_key = bool(api_key.strip() or os.environ.get("GEMINI_API_KEY", "").strip())
         if os.environ.get("GEMINI_API_KEY"):
             st.caption("已設定伺服器環境變數 API Key。")
-        st.caption(f"使用 {GEMINI_MODEL}。勾選即同意將文字傳送 Google。拆分模式每章首頁最多 8,000 字；只摘要模式每段最多 24,000 字、整次最多 480,000 字。1 段為 1 次請求，多段為段數加 1 次整合（最多 21 次），可能增加 API 費用。不執行 OCR。")
+        st.caption(f"使用 {GEMINI_MODEL}。勾選即同意將文字傳送 Google。拆分模式每章首頁最多 8,000 字；只摘要模式每段最多 24,000 字、整次最多 480,000 字。1 段為 1 次請求，多段為段數加 1 次整合（最多 21 次），另有最多 2 次暫時性服務錯誤重試；每次按產生或接續最多 23 次嘗試，可能再次計費。不執行 OCR。")
         if use_gemini and not has_key:
             st.warning("尚未提供 API Key；仍可拆分，但不會產生摘要。")
         st.divider()
         st.caption(f"暫存保留期限：{service.store.ttl / 60:g} 分鐘。背景每 30 秒檢查一次。")
-        st.caption("拆分完成後只保留 ZIP；只摘要作業結束後刪除所有實體暫存檔，文字結果保留至工作到期。")
+        st.caption("拆分完成後只保留 ZIP。只摘要會先刪除原始 PDF；預設失敗即清除段落原文，選擇保留供接續時最長 10 分鐘，可隨時清除。")
 
     try:
         transfer_widget(session.token, service.port)
@@ -88,12 +88,40 @@ def main() -> None:
     if state == "error":
         st.error(snapshot["error"] or "工作失敗，請重新上傳。")
         st.stop()
+    if state == "summary_paused":
+        st.warning(snapshot["error"])
+        st.caption(f"已完成 {snapshot['resume_completed']} / {snapshot['resume_chunks']} 段；"
+                   f"目前共 {snapshot['summary_requests']} 次請求嘗試，暫存剩餘 {snapshot['retry_retention_seconds']} 秒。完成段落不會重送。")
+        if snapshot["resume_completed"]:
+            try:
+                partial = session.export_summary()
+                st.download_button("下載已完成段落（部分 Markdown）", summary_markdown(partial, snapshot["filename"]).encode("utf-8"),
+                                   file_name=summary_filename(snapshot["filename"])[:-3] + "_部分.md", mime="text/markdown")
+            except RequestError:
+                st.info("工作狀態已更新，請更新結果。")
+        if snapshot["retry_after_seconds"]:
+            st.info(f"Google 要求等待，至少 {snapshot['retry_after_seconds']} 秒後才能接續。")
+        retry_consent = st.checkbox("同意接續未完成步驟及最多 2 次暫時性服務錯誤重試，可能再次計費")
+        if st.button("接續重試", disabled=not retry_consent or not has_key or snapshot["retry_after_seconds"] > 0):
+            try:
+                service.store.start_mobile_process(session, {"upload_id":snapshot["upload_id"],
+                    "gemini": True, "api_key": api_key, "retry_transient": True}, resume=True)
+            except PDFError as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
+        if st.button("取消摘要並清除暫存"):
+            service.store.cancel_summary(session)
+            st.rerun()
+        st.caption("重新輸入金鑰或使用伺服器金鑰即可接續。逾時不代表 Google 未處理請求，重試可能再次計費。工作到期或伺服器重新部署後需重新上傳。")
+        st.stop()
     if state == "processing":
         if snapshot["operation"] == "summary":
             progress = snapshot["progress"]
             st.info("正在取消，完成目前頁面擷取或 Gemini 請求後停止。已送出請求仍可能計費。"
-                    if snapshot["cancel_requested"] else f"正在產生分段摘要／整合：已完成 {progress.get('done', 0)} / {progress.get('total', '…')} 次請求。"
-                    if progress.get("stage") in {"summarizing", "integrating"} else
+                    if snapshot["cancel_requested"] else f"Google 暫時無法回應，等待 {progress.get('wait_seconds')} 秒後重試；整次最多額外 2 次。"
+                    if progress.get("stage") == "retry_wait" else f"正在產生分段摘要／整合：已完成 {progress.get('done', 0)} / {progress.get('total', '…')} 步驟，共 {snapshot['summary_requests']} 次請求嘗試。"
+                    if progress.get("stage") in {"summarizing", "integrating", "requesting"} else
                     f"正在擷取文字：{progress.get('done', 0)} / {progress.get('total', '…')} 頁。請更新結果查看進度。")
             if st.button("取消摘要", disabled=snapshot["cancel_requested"]):
                 try:
@@ -111,9 +139,11 @@ def main() -> None:
     if snapshot["info"]:
         info = snapshot["info"]
         st.caption(f"檔案：{snapshot['filename']} ｜ {info.page_count:,} 頁 ｜ {len(info.bookmarks):,} 個有效書籤")
-    if state == "summarized":
+    if state in {"summarized", "summary_partial"}:
         result = snapshot["document_summary"]
-        st.subheader("文件摘要結果")
+        st.subheader("部分摘要（未完成）" if result.get("partial") else "文件摘要結果")
+        if result.get("partial"):
+            st.warning(snapshot["error"])
         st.caption(f"已檢查所選第 {result['start_page']}–{result['requested_end_page']} 頁；"
                    f"可擷取文字共 {result['text_chars']:,} 字元，分 {result['chunk_count']} 段，{result['api_requests']} 次生成請求。")
         if result["unreadable_pages"]:
@@ -143,6 +173,8 @@ def main() -> None:
         st.warning(warning)
     operation = st.radio("處理方式", ["拆分 PDF 並打包 ZIP", "只產生摘要（不拆分）"], horizontal=True)
     if operation == "只產生摘要（不拆分）":
+        retain_for_retry = st.checkbox("暫時故障時保留未完成文字供接續（選用，最長 10 分鐘）", value=False)
+        st.caption("預設失敗即清除段落原文，已完成摘要仍可下載。勾選後只暫存最多 480,000 字元與已完成摘要，原始 PDF 先刪除；暫停後保留 10 分鐘，不因重試延長，到期後背景於 30 秒內清理。取消、清除或重新上傳也會刪除。")
         start = st.number_input("摘要起始頁", min_value=1, max_value=info.page_count, value=1, step=1)
         end = st.number_input("摘要結束頁", min_value=1, max_value=info.page_count,
                               value=min(info.page_count, MAX_SUMMARY_PAGES), step=1)
@@ -157,7 +189,8 @@ def main() -> None:
                 service.store.start_mobile_process(session, {
                     "operation": "summary", "upload_id": snapshot["upload_id"],
                     "start_page": int(start), "end_page": int(end), "summary_style": style,
-                    "allow_multiple_requests": True, "gemini": True, "api_key": api_key,
+                    "allow_multiple_requests": True, "retry_transient": True, "gemini": True, "api_key": api_key,
+                    "retain_for_retry": retain_for_retry,
                 })
             except PDFError as exc:
                 st.error(str(exc))

@@ -23,6 +23,7 @@ jobs:
       - run: node --check mobile/app.js && node --check mobile/sw.js
       - run: python -m tests.mobile_browser_check
       - run: python -m tests.summary_browser_check
+      - run: python -m tests.retry_browser_check
       - uses: actions/upload-artifact@v4
         with:
           name: pdf-splitter-mobile-source
