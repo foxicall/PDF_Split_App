@@ -24,7 +24,7 @@ def main():
         release = threading.Event()
         service = TransferService(root / 'spool', port=0)
         try:
-            with patch('google.genai.Client', return_value=google), sync_playwright() as pw:
+            with patch('google.genai.Client', return_value=google), patch('pdf_processor.MAX_SUMMARY_CHARS', 20), sync_playwright() as pw:
                 browser = pw.chromium.launch(headless=True, args=['--no-sandbox'])
                 context = browser.new_context(viewport={'width':390, 'height':844}, is_mobile=True,
                                               has_touch=True, permissions=['clipboard-read', 'clipboard-write'])
@@ -60,8 +60,18 @@ def main():
                 assert page.evaluate('navigator.clipboard.readText()') == '所選頁面摘要，無須拆分。'
                 assert not list((root / 'spool').glob('job-*'))
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-                assert 'Generated page 1' not in google.models.generate_content.call_args.kwargs['contents']
-                google.models.generate_content.assert_called_once()
+                assert google.models.generate_content.call_count == 3
+                assert 'Generated page 1' not in ''.join(call.kwargs['contents'] for call in google.models.generate_content.call_args_list)
+                for _ in range(2):
+                    with page.expect_download() as event:
+                        page.locator('#download-summary').click()
+                    download = event.value
+                    assert download.suggested_filename.endswith('_摘要.md')
+                    markdown = Path(download.path()).read_text(encoding='utf-8')
+                    assert '## 分段重點' in markdown and '第 2–3 頁' in markdown
+                    assert '所選頁面摘要，無須拆分。' in markdown
+                    assert 'mock-key' not in markdown
+                expect(page.locator('#document-result')).to_be_visible()
 
                 def pending(**_):
                     assert release.wait(15)

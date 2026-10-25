@@ -11,13 +11,13 @@ Android 8.0（API 26）以上可使用的 **Android WebView 客戶端**，與手
 3. 開啟「PDF 拆分（測試版）」並輸入已部署的 HTTPS 根網址，例如自己的 Render 網址。不能填 GitHub Repository 網址；它不會執行後端。
 4. 選擇 PDF，上傳並拆分；點「下載章節 ZIP」後，使用 Android 系統介面選擇儲存位置。
 
-目前可填入免費試用後端 `https://pdf-split-app.onrender.com`，閒置後首次連線可能需等待喚醒。上傳後也能選「只產生摘要（不拆分）」，設定頁碼並勾選 Gemini 同意傳送，直接取得文字摘要；此功能由後端網頁提供，不需重裝 APK。APK 不會自動購買或部署主機。Render 付費部署仍需另行確認，方案與費用見 [MOBILE.md](MOBILE.md)。
+目前可填入免費試用後端 `https://pdf-split-app.onrender.com`，閒置後首次連線可能需等待喚醒。上傳後也能選「只產生摘要（不拆分）」，設定頁碼並勾選 Gemini 同意傳送，直接取得文字摘要；文字摘要由後端網頁提供；**Markdown 原生儲存需 1.1.0 以上 APK**，請下載新版，或先用手機瀏覽器匯出。APK 不會自動購買或部署主機。Render 付費部署仍需另行確認，方案與費用見 [MOBILE.md](MOBILE.md)。
 
 ## 使用與安全邊界
 
 - 一般伺服器只接受 HTTPS，拒絕含帳密、查詢參數、片段或子路徑的設定，並使用 Android 的正常憑證驗證。不提供忽略 SSL 錯誤的選項。
 - PDF 選擇使用 Android Storage Access Framework；只存取使用者選取的檔案，不要求全檔案存取或廣泛儲存權限。
-- ZIP 先選擇目的地，確認後才開始 HTTP GET。取消儲存視窗不會消耗一次性下載。原生下載以 64KiB 緩衝區寫入選定位置，不將整份 ZIP 載入 RAM。
+- ZIP／Markdown 都先選擇目的地，確認後才開始 HTTP GET。取消儲存視窗不會消耗一次性下載。原生下載以 64KiB 緩衝區寫入選定位置，不將整份 ZIP 載入 RAM。Markdown 限制為 1MiB，核對 `text/markdown` 類型；只允許同站台的工作 `summary.md` 路徑，支援到期前重複儲存。
 - 下載只接受目前伺服器的有效工作 URL，不跟隨 HTTP 重新導向。失敗時嘗試刪除不完整輸出，若連結仍有效可重試；HTTP 完整送出後伺服器可能已清理，必要時須重新上傳。
 - APK 僅儲存後端網址。API Key 仍由手機網頁明確選用，不硬編碼在 APK；不把文件上傳到 GitHub。
 - 請保持 App 在前景，避免鎖定螢幕或系統回收程序。沒有實作長時間下載的前景服務，也沒有保證背景上傳不中斷。1GiB 支援以先前伺服器壓測為依據，不能推定所有實體手機與行動網路都能穩定處理。
@@ -44,6 +44,6 @@ APK 位於 `android/app/build/outputs/apk/debug/app-debug.apk`。Windows 可用 
 
 ## Android 模擬器測試
 
-CI 另外啟動隔離的本機測試後端與 Android 35 模擬器，使用 `adb reverse tcp:8765 tcp:8765` 連線。Instrumentation 測試涵蓋：安裝／啟動、實際 Android 選檔視窗開啟與取消、透過 Activity 回傳的測試 content URI 上傳、拆分、儲存視窗取消不消耗 ZIP，以及原生串流寫入並檢查 ZIP。為避免不同檔案管理器介面的文字／路徑差異，選定的測試文件與儲存位置透過 Espresso Intents 回傳；這不代表已手動測遍各品牌手機的檔案管理器。
+CI 另外啟動隔離的本機測試後端與 Android 35 模擬器，使用 `adb reverse tcp:8765 tcp:8765` 連線。Instrumentation 測試涵蓋：安裝／啟動、實際 Android 選檔視窗開啟與取消、透過 Activity 回傳的測試 content URI 上傳、拆分、儲存視窗取消不消耗 ZIP，以及原生串流寫入並檢查 ZIP。另以無文字測試 PDF（不呼叫 Gemini）驗證 Markdown 儲存視窗取消、重複儲存與 UTF-8 中文內容。為避免不同檔案管理器介面的文字／路徑差異，選定的測試文件與儲存位置透過 Espresso Intents 回傳；這不代表已手動測遍各品牌手機的檔案管理器。
 
 測試用 ContentProvider 僅在 instrumentation APK 中，提供程式產生的測試文件，不會包含在交付的 `app-debug.apk`。測試結果以該提交的 GitHub Actions 與 Android reports artifact 為準。實體手機相容性、正式 HTTPS 部署及 1GiB 實機上傳仍需後續驗證。

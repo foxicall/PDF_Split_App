@@ -37,7 +37,7 @@ public final class BackendUrl {
         try {
             URI uri = new URI(target);
             return sameOrigin(backend, target) && uri.getRawQuery() == null && uri.getRawFragment() == null
-                    && uri.getRawPath().matches("/[A-Za-z0-9_-]{43}/download");
+                    && uri.getRawPath().matches("/[A-Za-z0-9_-]{43}/(download|summary\\.md)");
         } catch (Exception ignored) { return false; }
     }
 

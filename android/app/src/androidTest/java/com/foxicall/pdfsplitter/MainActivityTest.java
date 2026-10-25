@@ -21,6 +21,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import static androidx.test.espresso.intent.Intents.intending;
 import static androidx.test.espresso.intent.matcher.IntentMatchers.hasAction;
 import static org.junit.Assert.*;
@@ -116,6 +119,55 @@ public class MainActivityTest {
             }
             assertEquals(2, count);
             waitJs(activity, "document.getElementById('status').textContent.includes('伺服器檔案已清除')");
+        }
+    }
+
+    @Test public void summaryMarkdownCanBeCancelledAndSavedAsUtf8() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        context.getSharedPreferences("backend_settings", Context.MODE_PRIVATE).edit()
+                .putString("backend", "http://127.0.0.1:8765/").commit();
+        UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
+        try (ActivityScenario<MainActivity> activity = ActivityScenario.launch(MainActivity.class)) {
+            waitJs(activity, "!!document.getElementById('file')");
+            Intents.init();
+            try {
+                intending(hasAction(Intent.ACTION_OPEN_DOCUMENT)).respondWith(new Instrumentation.ActivityResult(
+                        Activity.RESULT_OK, new Intent().setData(FixtureProvider.BLANK)
+                                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)));
+                clickFilePicker(activity, device);
+                waitJs(activity, "document.getElementById('file').files.length === 1");
+                js(activity, "document.getElementById('upload').click()");
+                waitJs(activity, "!document.getElementById('settings').hidden");
+                // Generated blank pages never send a Gemini request; the dummy key is not real.
+                js(activity, "document.getElementById('operation').value='summary';"
+                        + "document.getElementById('operation').dispatchEvent(new Event('change'));"
+                        + "document.getElementById('gemini').checked=true;"
+                        + "document.getElementById('api-key').value='dummy-empty-pages-no-api';"
+                        + "document.getElementById('split').click()");
+                waitJs(activity, "!document.getElementById('document-result').hidden");
+            } finally { Intents.release(); }
+            js(activity, "document.getElementById('download-summary').scrollIntoView({block:'center'})");
+            click(device, "下載 Markdown 摘要（.md）");
+            assertDocumentPicker(device); device.pressBack();
+            assertTrue(device.wait(Until.hasObject(By.text("已取消儲存；Markdown 尚未開始下載。")), 10000));
+            for (int attempt = 0; attempt < 2; attempt++) {
+                Intents.init();
+                try {
+                    intending(hasAction(Intent.ACTION_CREATE_DOCUMENT)).respondWith(new Instrumentation.ActivityResult(
+                            Activity.RESULT_OK, new Intent().setData(FixtureProvider.MARKDOWN)
+                                    .addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)));
+                    click(device, "下載 Markdown 摘要（.md）");
+                    assertTrue(device.wait(Until.hasObject(By.text("Markdown 已儲存至你選擇的位置。")), 30000));
+                } finally { Intents.release(); }
+                try (InputStream input = context.getContentResolver().openInputStream(FixtureProvider.MARKDOWN);
+                     ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                    byte[] buffer = new byte[4096]; int size;
+                    while ((size = input.read(buffer)) != -1) output.write(buffer, 0, size);
+                    String text = new String(output.toByteArray(), StandardCharsets.UTF_8);
+                    assertTrue(text.contains("# PDF 文件摘要") && text.contains("所選頁面無可擷取文字"));
+                    assertFalse(text.contains("dummy-empty-pages-no-api"));
+                }
+            }
         }
     }
 }

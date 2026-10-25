@@ -40,12 +40,13 @@ function render(data) {
   $('download').hidden = data.state !== 'ready';
   $('download').href = '/' + token + '/download';
   $('document-result').hidden = data.state !== 'summarized';
+  $('download-summary').href = '/' + token + '/summary.md';
   $('cancel-summary').hidden = data.state !== 'processing' || data.operation !== 'summary';
   $('cancel-summary').disabled = data.cancel_requested;
   const labels = {empty:'選擇檔案即可開始。',uploaded:'上傳完成，請選擇處理方式。',processing:'正在拆分與打包，請稍候…',ready:'ZIP 已就緒，可以下載。',downloading:'下載傳輸中…',downloaded:'下載串流已送出，伺服器檔案已清除。',uploading:'先前上傳未完成，請重新上傳。',summarized:'摘要作業結束，原始暫存檔已清除。',cancelled:'摘要已取消，暫存檔已清除；請重新上傳以開始新工作。'};
   if (data.state === 'processing' && data.operation === 'summary') {
     const progress = data.progress || {};
-    labels.processing = data.cancel_requested ? '正在取消；完成目前頁面擷取或 Google 請求後停止，已送出請求仍可能計費。' : progress.stage === 'generating' ? '已擷取文字，正在等待 Gemini 產生摘要…' : `正在擷取文字：${progress.done || 0} / ${progress.total || '…'} 頁`;
+    labels.processing = data.cancel_requested ? '正在取消；完成目前頁面擷取或 Google 請求後停止，已送出請求仍可能計費。' : ['summarizing','integrating'].includes(progress.stage) ? `${progress.stage === 'integrating' ? '正在整合各段重點' : '正在逐段摘要'}：已完成 ${progress.done} / ${progress.total} 次請求…` : `正在擷取文字：${progress.done || 0} / ${progress.total || '…'} 頁`;
   }
   $('status').textContent = data.error || labels[data.state] || '請重新上傳。';
   $('summary-notice').hidden = !data.rows.some(row => String(row['摘要']).startsWith('摘要暫停'));
@@ -69,7 +70,7 @@ function render(data) {
   if (data.document_summary) {
     const result = data.document_summary;
     $('document-summary').value = result.text;
-    $('summary-coverage').textContent = `選取第 ${result.start_page}–${result.requested_end_page} 頁；實際擷取至第 ${result.end_page} 頁，共 ${result.text_chars.toLocaleString()} 字。` + (result.truncated ? ' 已達文字上限，僅摘要截取的內容。' : '') + (result.unreadable_pages ? ` 有 ${result.unreadable_pages} 頁無法擷取文字。` : '');
+    $('summary-coverage').textContent = `已檢查所選第 ${result.start_page}–${result.requested_end_page} 頁；可擷取文字共 ${result.text_chars.toLocaleString()} 字元，分 ${result.chunk_count} 段，${result.api_requests} 次生成請求。` + (result.unreadable_pages ? ` 部分內容缺漏：${result.unreadable_pages} 頁擷取失敗，未納入摘要。` : '') + (result.blank_pages?.length ? ` 第 ${result.blank_pages.join('、')} 頁無可擷取文字（未執行 OCR）。` : '');
   } else { $('document-summary').value = ''; $('summary-coverage').textContent = ''; }
   $('chapters').replaceChildren(...data.rows.map(row => {
     const item = document.createElement('div'); item.className = 'chapter';
@@ -104,7 +105,7 @@ $('upload').addEventListener('click', async () => {
 $('split').addEventListener('click', async () => {
   setBusy(true);
   try {
-    const options = {upload_id:uploadId, operation:$('operation').value, start_page:Number($('summary-start').value), end_page:Number($('summary-end').value), mode:$('mode').value, depth:Number($('depth').value || 1), pages:Number($('pages').value), gemini:$('gemini').checked, api_key:$('api-key').value};
+    const options = {upload_id:uploadId, operation:$('operation').value, summary_style:$('summary-style').value, start_page:Number($('summary-start').value), end_page:Number($('summary-end').value), mode:$('mode').value, depth:Number($('depth').value || 1), pages:Number($('pages').value), gemini:$('gemini').checked, allow_multiple_requests:$('gemini').checked, api_key:$('api-key').value};
     await api('/' + token + '/process', options); $('api-key').value = ''; $('status').textContent = options.operation === 'summary' ? '正在準備文件摘要…' : '正在拆分與打包…'; $('settings').hidden = true;
   } catch(error) { $('status').textContent = error.message; }
   finally { setBusy(false); }
@@ -116,6 +117,12 @@ $('cancel-summary').addEventListener('click', async () => {
 $('copy-summary').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText($('document-summary').value); $('copy-status').textContent = '摘要已複製。'; }
   catch(_) { $('document-summary').focus(); $('document-summary').select(); $('copy-status').textContent = '請使用複製選單或長按選取的摘要文字。'; }
+});
+$('download-summary').addEventListener('click', event => {
+  if (window.__pdfNativeDownload && !window.__pdfNativeMarkdown) {
+    event.preventDefault();
+    $('copy-status').textContent = '此 APK 版本尚不支援 Markdown 儲存。請更新至 1.1.0 以上，或用手機瀏覽器開啟本站匯出。';
+  }
 });
 $('clear').addEventListener('click', async () => {
   try { await api('/' + token + '/clear', {}); $('file').value=''; $('filename').textContent='尚未選擇檔案'; $('progress').value=0; await poll(); }

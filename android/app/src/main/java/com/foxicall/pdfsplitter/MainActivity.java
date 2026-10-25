@@ -98,9 +98,9 @@ public class MainActivity extends Activity {
                 // DownloadListener is too late: WebView has already fetched the one-shot ZIP.
                 // Intercept the DOM click before any HTTP request, then use a validated native route.
                 view.evaluateJavascript("(function(){if(window.__pdfNativeDownload)return;"
-                        + "window.__pdfNativeDownload=true;document.addEventListener('click',function(event){"
+                        + "window.__pdfNativeDownload=true;window.__pdfNativeMarkdown=true;document.addEventListener('click',function(event){"
                         + "var link=event.target.closest?event.target.closest('a'):null;"
-                        + "if(!link||link.id!=='download')return;event.preventDefault();event.stopImmediatePropagation();"
+                        + "if(!link||(link.id!=='download'&&link.id!=='download-summary'))return;event.preventDefault();event.stopImmediatePropagation();"
                         + "location.href='pdfsplitter://download?url='+encodeURIComponent(link.href);"
                         + "},true);})();", null);
             }
@@ -130,7 +130,7 @@ public class MainActivity extends Activity {
     private void message(String text) { ui.post(() -> { if (!isDestroyed()) status.setText(text); }); }
 
     private void configureServer() {
-        if (downloading || !pendingDownload.isEmpty()) { message("請先完成或取消目前的 ZIP 儲存作業。"); return; }
+        if (downloading || !pendingDownload.isEmpty()) { message("請先完成或取消目前的檔案儲存作業。"); return; }
         LinearLayout form = new LinearLayout(this); form.setOrientation(LinearLayout.VERTICAL); form.setPadding(dp(24), dp(8), dp(24), dp(8));
         TextView help = new TextView(this);
         help.setText("此 APK 需要已部署的 PDF 拆分伺服器，不能離線拆分。請填入 HTTPS 網址；付費主機不會由 App 自動建立。");
@@ -162,7 +162,9 @@ public class MainActivity extends Activity {
         if (!BackendUrl.isDownload(backend, url)) { message("已拒絕非目前伺服器的下載連結。"); return; }
         pendingDownload = url;
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("application/zip").putExtra(Intent.EXTRA_TITLE, "chapters.zip");
+                .setType(url.endsWith("/summary.md") ? "text/markdown" : "application/zip")
+                .putExtra(Intent.EXTRA_TITLE, url.endsWith("/summary.md") ? "summary.md" : "chapters.zip");
+        message("請選擇檔案儲存位置。");
         try { startActivityForResult(intent, SAVE_ZIP); }
         catch (ActivityNotFoundException ignored) { pendingDownload = ""; message("此裝置沒有可選擇儲存位置的檔案管理器。"); }
     }
@@ -175,12 +177,15 @@ public class MainActivity extends Activity {
         } else if (request == SAVE_ZIP) {
             String url = pendingDownload; pendingDownload = "";
             if (uri != null && !url.isEmpty()) download(url, uri);
-            else message("已取消儲存；ZIP 尚未開始下載。");
+            else message(url.endsWith("/summary.md") ? "已取消儲存；Markdown 尚未開始下載。" : "已取消儲存；ZIP 尚未開始下載。");
         }
     }
 
     private void download(String url, Uri destination) {
-        downloading = true; message("正在下載 ZIP，請保持 App 開啟…");
+        boolean markdown = url.endsWith("/summary.md");
+        String label = markdown ? "Markdown" : "ZIP";
+        long limit = markdown ? 1024 * 1024 : MAX_ZIP_BYTES;
+        downloading = true; message("正在下載 " + label + "，請保持 App 開啟…");
         downloads.execute(() -> {
             HttpURLConnection connection = null;
             boolean complete = false;
@@ -190,7 +195,7 @@ public class MainActivity extends Activity {
                 String cookies = CookieManager.getInstance().getCookie(url);
                 if (cookies != null) connection.setRequestProperty("Cookie", cookies);
                 if (connection.getResponseCode() != 200 || connection.getContentType() == null
-                        || !connection.getContentType().startsWith("application/zip") || connection.getContentLengthLong() > MAX_ZIP_BYTES) {
+                        || !connection.getContentType().split(";", 2)[0].trim().equals(markdown ? "text/markdown" : "application/zip") || connection.getContentLengthLong() > limit) {
                     throw new java.io.IOException("Download unavailable");
                 }
                 long expected = connection.getContentLengthLong(), received = 0, lastUpdate = 0;
@@ -198,14 +203,14 @@ public class MainActivity extends Activity {
                     if (output == null) throw new java.io.IOException("Destination unavailable");
                     byte[] buffer = new byte[64 * 1024]; int count;
                     while ((count = input.read(buffer)) != -1) {
-                        if (Thread.currentThread().isInterrupted() || received + count > MAX_ZIP_BYTES) throw new java.io.IOException("Interrupted");
+                        if (Thread.currentThread().isInterrupted() || received + count > limit) throw new java.io.IOException("Interrupted");
                         output.write(buffer, 0, count); received += count;
-                        if (received - lastUpdate >= 1024 * 1024) { message("ZIP 已接收 " + (received / 1024 / 1024) + " MB…"); lastUpdate = received; }
+                        if (received - lastUpdate >= 1024 * 1024) { message(label + " 已接收 " + (received / 1024 / 1024) + " MB…"); lastUpdate = received; }
                     }
                     if (expected >= 0 && received != expected) throw new java.io.IOException("Incomplete response");
                     output.flush();
                 }
-                complete = true; message("ZIP 已儲存至你選擇的位置。");
+                complete = true; message(label + " 已儲存至你選擇的位置。");
             } catch (Exception ignored) {
                 message("下載未完成。請確認網路與儲存空間；若連結仍有效可重試，否則需重新上傳 PDF。");
             } finally {

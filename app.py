@@ -9,7 +9,8 @@ from urllib.parse import urlsplit
 import streamlit as st
 import streamlit.components.v1 as components
 
-from gemini_helper import GEMINI_MODEL, GeminiSummarizer
+from gemini_helper import GEMINI_MODEL, GeminiSummarizer, SUMMARY_STYLES
+from summary_markdown import summary_filename, summary_markdown
 from pdf_processor import PDFError, MAX_SUMMARY_PAGES, bookmark_chapters, fixed_chapters, validate_summary_range
 from transfer_server import RequestError, default_service
 
@@ -63,7 +64,7 @@ def main() -> None:
         has_key = bool(api_key.strip() or os.environ.get("GEMINI_API_KEY", "").strip())
         if os.environ.get("GEMINI_API_KEY"):
             st.caption("已設定伺服器環境變數 API Key。")
-        st.caption(f"使用 {GEMINI_MODEL}。啟用後，拆分模式會傳送各章首頁最多 8,000 字至 Google；只摘要模式會傳送所選範圍最多 24,000 字，可能產生 API 費用。不執行 OCR。")
+        st.caption(f"使用 {GEMINI_MODEL}。勾選即同意將文字傳送 Google。拆分模式每章首頁最多 8,000 字；只摘要模式每段最多 24,000 字、整次最多 480,000 字。1 段為 1 次請求，多段為段數加 1 次整合（最多 21 次），可能增加 API 費用。不執行 OCR。")
         if use_gemini and not has_key:
             st.warning("尚未提供 API Key；仍可拆分，但不會產生摘要。")
         st.divider()
@@ -91,8 +92,8 @@ def main() -> None:
         if snapshot["operation"] == "summary":
             progress = snapshot["progress"]
             st.info("正在取消，完成目前頁面擷取或 Gemini 請求後停止。已送出請求仍可能計費。"
-                    if snapshot["cancel_requested"] else "已擷取文字，正在等待 Gemini 摘要…"
-                    if progress.get("stage") == "generating" else
+                    if snapshot["cancel_requested"] else f"正在產生分段摘要／整合：已完成 {progress.get('done', 0)} / {progress.get('total', '…')} 次請求。"
+                    if progress.get("stage") in {"summarizing", "integrating"} else
                     f"正在擷取文字：{progress.get('done', 0)} / {progress.get('total', '…')} 頁。請更新結果查看進度。")
             if st.button("取消摘要", disabled=snapshot["cancel_requested"]):
                 try:
@@ -113,14 +114,16 @@ def main() -> None:
     if state == "summarized":
         result = snapshot["document_summary"]
         st.subheader("文件摘要結果")
-        st.caption(f"選取第 {result['start_page']}–{result['requested_end_page']} 頁；"
-                   f"實際擷取至第 {result['end_page']} 頁，共 {result['text_chars']:,} 字。")
-        if result["truncated"]:
-            st.warning("已達文字上限，僅摘要截取的內容，不代表完整所選範圍。")
+        st.caption(f"已檢查所選第 {result['start_page']}–{result['requested_end_page']} 頁；"
+                   f"可擷取文字共 {result['text_chars']:,} 字元，分 {result['chunk_count']} 段，{result['api_requests']} 次生成請求。")
         if result["unreadable_pages"]:
             st.warning(f"有 {result['unreadable_pages']} 頁無法擷取文字。")
-        st.text_area("摘要內容", result["text"], height=220)
-        st.info("原始 PDF 暫存已清除，沒有建立章節 PDF 或 ZIP。請複製保存結果；需要再次處理時請重新上傳。")
+        if result["blank_pages"]:
+            st.warning("無可擷取文字的頁面（未執行 OCR）：" + "、".join(map(str, result["blank_pages"])))
+        st.text_area("摘要內容", result["text"], height=400)
+        st.download_button("下載 Markdown 摘要（.md）", summary_markdown(result, snapshot["filename"]).encode("utf-8"),
+                           file_name=summary_filename(snapshot["filename"]), mime="text/markdown")
+        st.info("Markdown 包含整合摘要、分段重點與來源範圍。原始 PDF 暫存已清除，沒有建立章節 PDF 或 ZIP。工作到期前可重複下載；需要再次摘要時請重新上傳。")
         st.stop()
     if state in {"ready", "downloading", "downloaded"}:
         if state == "ready":
@@ -143,7 +146,9 @@ def main() -> None:
         start = st.number_input("摘要起始頁", min_value=1, max_value=info.page_count, value=1, step=1)
         end = st.number_input("摘要結束頁", min_value=1, max_value=info.page_count,
                               value=min(info.page_count, MAX_SUMMARY_PAGES), step=1)
-        st.caption("每次最多 50 頁，依頁序擷取最多 24,000 字，產生最多 300 字摘要；只摘要所選範圍，不代表整份文件。")
+        style = st.selectbox("摘要詳細程度", list(SUMMARY_STYLES), index=2,
+                             format_func=lambda value: f"{SUMMARY_STYLES[value][0]}（最多 {SUMMARY_STYLES[value][1]:,} 字）")
+        st.caption("最多 50 頁／480,000 字元；每段最多 24,000 字，逐段摘要後整合，不略過後面的頁面。單段 1 次、多段為段數 + 1 次（最多 21 次 Gemini 請求）。超過上限會停止並提示縮小範圍，不先呼叫 API。只處理可擷取文字，不含 OCR。")
         if not use_gemini or not has_key:
             st.info("請在側欄提供 API Key 並勾選啟用 Gemini，才會傳送文字以產生摘要。")
         if st.button("產生文件摘要", type="primary", disabled=not use_gemini or not has_key):
@@ -151,7 +156,8 @@ def main() -> None:
                 validate_summary_range(info.page_count, int(start), int(end))
                 service.store.start_mobile_process(session, {
                     "operation": "summary", "upload_id": snapshot["upload_id"],
-                    "start_page": int(start), "end_page": int(end), "gemini": True, "api_key": api_key,
+                    "start_page": int(start), "end_page": int(end), "summary_style": style,
+                    "allow_multiple_requests": True, "gemini": True, "api_key": api_key,
                 })
             except PDFError as exc:
                 st.error(str(exc))

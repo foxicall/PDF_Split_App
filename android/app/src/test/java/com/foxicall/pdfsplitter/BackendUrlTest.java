@@ -25,8 +25,10 @@ public class BackendUrlTest {
     @Test public void downloadsMustUseSameOriginAndExactCapabilityPath() {
         String root = "https://example.com/", token = "a".repeat(43);
         assertTrue(BackendUrl.isDownload(root, root + token + "/download"));
+        assertTrue(BackendUrl.isDownload(root, root + token + "/summary.md"));
         for (String url : new String[]{"https://evil.example/" + token + "/download", root + token + "/download?file=x",
-                root + "../download", "http://example.com/" + token + "/download", root + token + "/download#x",
+                root + "../download", root + token + "/summaryXmd", root + token + "/summary.md?token=x",
+                "https://evil.example/" + token + "/summary.md", root + token + "/summary.md/../download", "http://example.com/" + token + "/download", root + token + "/download#x",
                 "https://user@example.com/" + token + "/download", "https://example.com:444/" + token + "/download"}) {
             assertFalse(url, BackendUrl.isDownload(root, url));
         }

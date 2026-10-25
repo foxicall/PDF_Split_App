@@ -33,6 +33,7 @@ jobs:
             transfer_server.py
             upload_widget.html
             gemini_helper.py
+            summary_markdown.py
             requirements.txt
             README.md
             MOBILE.md

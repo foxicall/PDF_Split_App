@@ -14,9 +14,11 @@ import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from filelock import FileLock, Timeout
+from gemini_helper import GeminiSummaryError, SUMMARY_STYLES
+from summary_markdown import summary_filename, summary_markdown
 
 from pdf_processor import (
     CHUNK_BYTES, MAX_UPLOAD_BYTES, MAX_SUMMARY_PAGES, PDFError, PDFCancelled, PDFInfo, TemporaryWorkspace,
@@ -198,7 +200,8 @@ class SessionStore:
             session.touched = time.monotonic()  # The worker may already have removed its files.
 
     def process_summary(self, session: Session, start_page: int, end_page: int, summarize,
-                        expected_upload_id: str, _reserved: bool = False) -> None:
+                        expected_upload_id: str, _reserved: bool = False, combine=None,
+                        summary_style: str = "detailed", allow_multiple_requests: bool = False) -> None:
         if not _reserved and not self._processing.acquire(blocking=False):
             raise RequestError("其他文件正在處理，請稍後再試。", 409)
         started = False
@@ -221,7 +224,9 @@ class SessionStore:
                     session.touch()
 
             result = summarize_pdf(workspace.path / "source.pdf", workspace, start_page, end_page,
-                                   summarize, progress=progress, cancelled=session.cancel_event.is_set)
+                                   summarize, progress=progress, cancelled=session.cancel_event.is_set,
+                                   combine=combine, summary_style=summary_style,
+                                   allow_multiple_requests=allow_multiple_requests)
             with session.lock:
                 if session.cancel_event.is_set():
                     raise PDFCancelled("摘要已取消。")
@@ -237,6 +242,14 @@ class SessionStore:
                 session.progress = {}
                 session.state = "cancelled"
                 session.touch()
+        except (PDFError, GeminiSummaryError) as exc:
+            if started:
+                with session.lock:
+                    session.cleanup()
+                    session.document_summary = None
+                    session.state = "error"
+                    session.error = str(exc) + " 暫存已清除；請重新上傳後重試。"
+            raise
         except BaseException:
             if started:
                 with session.lock:
@@ -291,6 +304,9 @@ class SessionStore:
             operation = options.get("operation", "split")
             mode = options.get("mode", "bookmarks")
             if operation == "summary":
+                style = options.get("summary_style", "detailed")
+                if not isinstance(style, str) or style not in SUMMARY_STYLES:
+                    raise RequestError("請選擇精簡、標準或詳細摘要。")
                 start = options.get("start_page", 1)
                 end = options.get("end_page", min(info.page_count, MAX_SUMMARY_PAGES))
                 try:
@@ -327,8 +343,11 @@ class SessionStore:
                 try:
                     with GeminiSummarizer(key) as helper:
                         if operation == "summary":
-                            self.process_summary(session, start, end, helper.summarize_document,
-                                                 expected_upload_id=upload_id, _reserved=True)
+                            self.process_summary(session, start, end, helper.summarize_chunk,
+                                                 expected_upload_id=upload_id, _reserved=True,
+                                                 combine=lambda text: helper.summarize_document(text, style),
+                                                 summary_style=style,
+                                                 allow_multiple_requests=options.get("allow_multiple_requests") is True)
                         else:
                             self.process(session, chapters, summarize=helper.summarize if enabled else None,
                                          expected_upload_id=upload_id, _reserved=True)
@@ -583,6 +602,16 @@ class TransferService:
                         snapshot["warnings"] = list(info.warnings) if info else []
                         snapshot["retention"] = store.ttl
                         self._json(snapshot)
+                    elif action == "summary.md":
+                        with session.lock:
+                            if session.state != "summarized" or session.document_summary is None:
+                                raise RequestError("摘要尚未完成、已清除或已到期。", 409)
+                            body = summary_markdown(session.document_summary, session.filename).encode("utf-8")
+                            filename = summary_filename(session.filename)
+                        self._headers(200, "text/markdown; charset=utf-8", len(body))
+                        self.send_header("Content-Disposition", "attachment; filename=summary.md; filename*=UTF-8''" + quote(filename))
+                        self.end_headers()
+                        self.wfile.write(body)
                     elif action == "download":
                         self._download(session)
                     else:
