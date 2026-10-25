@@ -63,6 +63,13 @@ public class MainActivityTest {
                 device.wait(Until.hasObject(By.pkg("com.google.android.documentsui")), 10000)
                 || device.wait(Until.hasObject(By.pkg("com.android.documentsui")), 5000));
     }
+    private void clickFilePicker(ActivityScenario<MainActivity> activity, UiDevice device) throws Exception {
+        waitJs(activity, "!!document.querySelector('label[for=file]')");
+        // The introduction can wrap on small screens. Keep a real user tap on
+        // the visible label so the test still exercises WebView's file chooser.
+        js(activity, "document.querySelector('label[for=file]').scrollIntoView({block:'center'})");
+        click(device, "選擇 PDF 檔案");
+    }
 
     @Test public void installedAppConnectsUploadsAndStreamsZip() throws Exception {
         Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
@@ -71,7 +78,7 @@ public class MainActivityTest {
         UiDevice device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         try (ActivityScenario<MainActivity> activity = ActivityScenario.launch(MainActivity.class)) {
             waitJs(activity, "!!document.getElementById('file')");
-            click(device, "選擇 PDF 檔案");
+            clickFilePicker(activity, device);
             assertDocumentPicker(device); device.pressBack();
             waitJs(activity, "!!document.getElementById('file')");
             // Android's actual picker opens above. Supply a generated content URI through the
@@ -81,7 +88,7 @@ public class MainActivityTest {
                 intending(hasAction(Intent.ACTION_OPEN_DOCUMENT)).respondWith(new Instrumentation.ActivityResult(
                         Activity.RESULT_OK, new Intent().setData(FixtureProvider.INPUT)
                                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)));
-                click(device, "選擇 PDF 檔案");
+                clickFilePicker(activity, device);
                 waitJs(activity, "document.getElementById('file').files.length === 1");
                 js(activity, "document.getElementById('upload').click()");
                 waitJs(activity, "!document.getElementById('settings').hidden");

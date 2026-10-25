@@ -50,10 +50,12 @@ def test_http_upload_download_and_completion_cleanup(service, make_pdf, tmp_path
             assert len(archive.namelist()) == 2
             assert archive.testzip() is None
         deadline = time.monotonic() + 3
-        while directory.exists() and time.monotonic() < deadline:
+        # Read the completed state under the session lock: removing the directory
+        # happens before the download worker publishes its final state.
+        while session.snapshot()["state"] == "downloading" and time.monotonic() < deadline:
             time.sleep(0.01)
         assert not directory.exists()
-        assert session.state == "downloaded"
+        assert session.snapshot()["state"] == "downloaded"
         assert client.get(base + "download", timeout=5).status_code == 409
 
 
