@@ -1,0 +1,22 @@
+# Proposed paid deployment; creating this Blueprint requires a separate hosting decision.
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+services:
+  - type: web
+    name: pdf-splitter-mobile
+    runtime: python
+    plan: 1c-2g
+    region: singapore
+    numInstances: 1
+    buildCommand: pip install -r requirements.txt
+    startCommand: python mobile_server.py
+    healthCheckPath: /health
+    autoDeployTrigger: 'off'
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.14
+      - key: PDF_TRANSFER_HOST
+        value: 0.0.0.0
+      - key: PDF_TEMP_ROOT
+        value: /tmp/pdf-mobile-splitter
+      - key: PDF_RETENTION_SECONDS
+        value: '1800'

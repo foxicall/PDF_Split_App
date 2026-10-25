@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#137c74">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="PDF 拆分">
+  <meta name="description" content="依章節拆分 PDF，打包 ZIP，支援最大 1GB。">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+  <title>PDF 章節拆分</title>
+</head>
+<body>
+  <header><img src="/icon-192.png" width="44" height="44" alt=""><div><strong>PDF 章節拆分</strong><span>一份文件，按章整理。</span></div><button id="install" hidden>安裝</button></header>
+  <main>
+    <section class="intro"><p class="eyebrow">隨手整理 · 輕鬆下載</p><h1>把厚厚一份 PDF<br>變成剛好的章節。</h1><p>依書籤或頁數拆分，完成後一次下載 ZIP。</p></section>
+    <section class="card">
+      <label class="file-label" for="file"><span class="file-symbol">＋</span><strong>選擇 PDF 檔案</strong><span>最大 1GB（1024MB）</span></label>
+      <input id="file" type="file" accept=".pdf,application/pdf">
+      <p id="filename" class="muted">尚未選擇檔案</p>
+      <button id="upload" class="primary wide">上傳 PDF</button>
+      <progress id="progress" max="100" value="0" aria-label="上傳進度"></progress>
+      <p id="status" role="status" aria-live="polite">選擇檔案即可開始。</p>
+    </section>
+    <section id="settings" class="card" hidden>
+      <h2>拆分設定</h2><p id="document-info" class="muted"></p><p id="warnings"></p>
+      <label for="mode">拆分方式</label><select id="mode"><option value="bookmarks">依書籤章節</option><option value="fixed">固定頁數</option></select>
+      <div id="depth-field"><label for="depth">使用第 1 層至指定層級</label><select id="depth"></select></div>
+      <div id="pages-field" hidden><label for="pages">每份 PDF 的頁數</label><input id="pages" type="number" min="1" max="1000000" value="10"></div>
+      <details><summary>智慧摘要（選用）</summary><label class="check"><input id="gemini" type="checkbox">啟用 Gemini 章節摘要</label><label for="api-key">Gemini API Key</label><input id="api-key" type="password" autocomplete="off" placeholder="留空時使用伺服器設定"><p class="muted">啟用後會傳送各章首頁最多 8,000 字元至 Google，可能產生 API 費用。不執行 OCR，金鑰不存入瀏覽器儲存空間。</p></details>
+      <button id="split" class="primary wide">拆分並打包 ZIP</button>
+    </section>
+    <section id="result" class="card" hidden><h2>章節已整理完成</h2><a id="download" class="primary wide" download="chapters.zip">下載章節 ZIP</a><p class="muted">下載串流送出後會刪除伺服器檔案。請保留下載的 ZIP。</p><div id="chapters"></div></section>
+    <button id="clear" class="secondary wide" hidden>清除這次工作</button>
+    <section class="notes"><h2>安裝到手機</h2><p id="install-help">Android：Chrome 選單 →「安裝應用程式」或「加到主畫面」。iPhone：Safari 分享 →「加入主畫面」。</p><p>需使用 HTTPS 網址。安裝後仍需網路與伺服器才能拆分；離線只能開啟介面。大型上傳期間請保持畫面開啟，手機切到背景可能中斷。</p><p>上傳新文件會清除上一份檔案。工作預設保留 30 分鐘，未下載的檔案也會自動清理。</p></section>
+  </main><footer>PDF Bookmark Splitter · 章節整理工具</footer>
+</body>
+</html>

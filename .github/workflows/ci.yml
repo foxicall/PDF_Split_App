@@ -1,0 +1,38 @@
+name: Tests and mobile PWA
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pip install -r requirements.txt pytest requests playwright
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m pytest -q
+      - run: node --check mobile/app.js && node --check mobile/sw.js
+      - run: python -m tests.mobile_browser_check
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdf-splitter-mobile-source
+          path: |
+            mobile/
+            mobile_server.py
+            pdf_processor.py
+            transfer_server.py
+            upload_widget.html
+            gemini_helper.py
+            requirements.txt
+            README.md
+            MOBILE.md
+          if-no-files-found: error

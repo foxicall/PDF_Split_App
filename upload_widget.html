@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF 上傳與下載</title>
+  <style>
+    :root { color-scheme: light dark; font: 15px system-ui, sans-serif; }
+    body { margin: 0; padding: 16px; }
+    .box { border: 1px solid #849b9b; border-radius: 12px; padding: 18px; }
+    input { display: block; margin: 12px 0; max-width: 100%; }
+    button, .download { display: inline-block; border: 0; padding: 10px 16px;
+      border-radius: 7px; background: #137c74; color: white; cursor: pointer; text-decoration: none; }
+    button:disabled { opacity: .5; cursor: wait; }
+    #clear { background: #596777; margin-left: 8px; }
+    progress { display: block; width: 100%; margin: 14px 0; accent-color: #137c74; }
+    #message { line-height: 1.5; margin-bottom: 8px; }
+    small { color: #718287; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <strong>選擇 PDF · 最大 1GB（1024MB）</strong>
+    <input id="file" type="file" accept=".pdf,application/pdf" aria-label="選擇 PDF">
+    <button id="upload">上傳 PDF</button><button id="clear">清除暫存</button>
+    <progress id="progress" max="100" value="0" aria-label="上傳進度"></progress>
+    <div id="message" role="status" aria-live="polite">選擇檔案後按「上傳 PDF」。</div>
+    <a id="download" class="download" href="download" download="chapters.zip" hidden>下載章節 ZIP</a>
+    <small>新上傳會刪除上一份檔案與 ZIP；下載串流送出後 ZIP 自動清除。</small>
+  </div>
+  <script>
+    const fileInput = document.getElementById('file');
+    const upload = document.getElementById('upload');
+    const clear = document.getElementById('clear');
+    const message = document.getElementById('message');
+    const progress = document.getElementById('progress');
+    const download = document.getElementById('download');
+    let uploading = false;
+    async function api(path, options) {
+      const response = await fetch(path, {cache: 'no-store', ...options});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '傳輸失敗，請重試。');
+      return data;
+    }
+    const postJSON = (path, data) => api(path, {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+    upload.addEventListener('click', async () => {
+      const file = fileInput.files[0];
+      if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
+        message.textContent = '請先選擇 PDF 檔案。'; return;
+      }
+      if (!file.size || file.size > 1024 * 1024 * 1024) {
+        message.textContent = '檔案必須大於 0 且不超過 1GB（1024MB）。'; return;
+      }
+      uploading = true; upload.disabled = clear.disabled = fileInput.disabled = true;
+      download.hidden = true; progress.value = 0;
+      try {
+        const {id, chunkSize} = await postJSON('start', {name: file.name, size: file.size});
+        for (let offset = 0; offset < file.size; offset += chunkSize) {
+          const end = Math.min(offset + chunkSize, file.size);
+          await api(`chunk?id=${encodeURIComponent(id)}&offset=${offset}`, {
+            method: 'POST', headers: {'Content-Type': 'application/octet-stream'},
+            body: file.slice(offset, end)
+          });
+          progress.value = end / file.size * 100;
+          message.textContent = `上傳中：${progress.value.toFixed(1)}%`;
+        }
+        message.textContent = '正在檢查 PDF…';
+        await postJSON('finish', {id});
+        message.textContent = '上傳完成。請按下方「讀取上傳狀態／更新結果」設定拆分。';
+      } catch (error) {
+        message.textContent = error.message || '無法連線，請重新上傳。';
+      } finally {
+        uploading = false; upload.disabled = clear.disabled = fileInput.disabled = false;
+      }
+    });
+    clear.addEventListener('click', async () => {
+      try {
+        await postJSON('clear', {});
+        progress.value = 0; download.hidden = true; fileInput.value = '';
+        message.textContent = '暫存檔已清除，請按下方按鈕更新主介面。';
+      } catch (error) { message.textContent = error.message; }
+    });
+    async function poll() {
+      if (uploading) return;
+      try {
+        const data = await api('status');
+        download.hidden = data.state !== 'ready';
+        upload.disabled = clear.disabled = fileInput.disabled = ['processing', 'downloading'].includes(data.state);
+        const labels = {
+          uploaded: '上傳完成。請按下方「讀取上傳狀態／更新結果」設定拆分。',
+          processing: '正在拆分與打包，請保留此頁面…',
+          ready: 'ZIP 已就緒，請在保留期限內下載。',
+          downloading: '下載串流傳輸中…',
+          downloaded: '下載串流已送出，伺服器暫存檔已清除。'
+        };
+        if (labels[data.state]) message.textContent = labels[data.state];
+        if (data.state === 'error') message.textContent = data.error;
+      } catch (error) { message.textContent = error.message || '連線中斷，請重新整理主介面。'; }
+    }
+    setInterval(poll, 2000);
+    poll();
+  </script>
+</body>
+</html>
