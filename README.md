@@ -4,6 +4,8 @@
 
 另提供手機 PWA：執行 `python mobile_server.py`，本機開啟 `http://localhost:8765`。部署至可連線的 HTTPS 後，Android／iPhone 可加入主畫面；需要伺服器，不能離線拆分。詳見 [手機安裝與部署說明](MOBILE.md)。
 
+Android APK：見 [安裝、建置與測試說明](ANDROID.md)，下載 GitHub Actions 的 `pdf-splitter-android-apk` 產物。APK 為需要伺服器的 Android 客戶端，首次開啟需填入後端網址。
+
 ## 啟動
 
 需要 Python 3.10+。在專案目錄執行：

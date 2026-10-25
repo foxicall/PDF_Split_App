@@ -2,6 +2,8 @@
 
 手機版是 **可安裝的漸進式網頁應用程式（PWA）**，與桌面 Streamlit 共用 Python PDF 拆分、暫存管理及串流傳輸核心。它不是 APK／IPA，也不是手機離線 PDF 引擎。
 
+另已加入 Android APK 專案、簽章驗證與 CI 產物，安裝方式及驗證邊界見 [ANDROID.md](ANDROID.md)。Android APK 同樣需要可連線的後端；PWA 不受影響。
+
 ## 本機啟動
 
 ```bash
@@ -26,7 +28,7 @@ python mobile_server.py
 - 已提供 `manifest.webmanifest`、192／512 像素圖示、`standalone` 顯示、根目錄 service worker 範圍、安裝提示與 iPhone 操作說明。
 - 自動化瀏覽器測試以 390 × 844 觸控視窗驗證介面、manifest、Chromium 安裝條件、上傳、拆分、ZIP 下載、伺服器清理、離線開啟。
 - service worker 只快取六個公開介面資源；不快取 PDF、ZIP、API 回應、權杖、摘要或 API Key。Session 權杖只保存在該分頁的 `sessionStorage`；金鑰只保留在表單／當次請求，不寫入 localStorage。
-- 尚未在實體 Android／iPhone 安裝測試，也沒有產出 APK／IPA、簽章或商店上架。
+- PWA 尚未在實體 Android／iPhone 安裝測試。另提供 Android APK 建置流程，詳見 ANDROID.md；未產出 IPA 或進行商店上架。
 - 尚未建立公開 HTTPS 後端。必須完成部署後，才能從手機實際安裝與使用。
 
 ## 大檔案限制

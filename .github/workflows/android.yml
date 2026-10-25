@@ -1,0 +1,86 @@
+name: Android APK
+on:
+  push:
+    paths:
+      - 'android/**'
+      - 'mobile/**'
+      - '*.py'
+      - 'requirements.txt'
+      - '.github/workflows/android.yml'
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install Android build tools
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Build, lint and unit test APK
+        run: ./android/gradlew -p android assembleDebug testDebugUnitTest assembleDebugAndroidTest lintDebug --no-daemon
+      - name: Verify installable APK signature
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs android/app/build/outputs/apk/debug/app-debug.apk > android/app/build/outputs/apk/debug/signature.txt
+          cd android/app/build/outputs/apk/debug
+          sha256sum app-debug.apk > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdf-splitter-android-apk
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/debug/signature.txt
+            android/app/build/outputs/apk/debug/SHA256SUMS
+          if-no-files-found: error
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Start isolated test backend
+        run: |
+          pip install -r requirements.txt
+          PDF_TEMP_ROOT="$RUNNER_TEMP/pdf-android-test" python mobile_server.py > "$RUNNER_TEMP/pdf-android-server.log" 2>&1 &
+          python - <<'PY'
+          import time, urllib.request
+          for attempt in range(60):
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=1) as response:
+                      assert response.status == 200
+                  break
+              except OSError:
+                  time.sleep(1)
+          else:
+              raise RuntimeError('Test backend did not start')
+          PY
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install and exercise APK on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            adb reverse tcp:8765 tcp:8765
+            ./android/gradlew -p android connectedDebugAndroidTest --no-daemon
+      - name: Keep Android test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-reports
+          path: |
+            android/app/build/reports/
+            android/app/build/outputs/androidTest-results/

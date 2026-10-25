@@ -1,0 +1,60 @@
+plugins { id 'com.android.application' }
+
+def developmentKey = rootProject.layout.buildDirectory.file('development-signing.keystore').get().asFile
+tasks.register('generateDevelopmentKey', Exec) {
+    onlyIf { !developmentKey.exists() }
+    doFirst { developmentKey.parentFile.mkdirs() }
+    commandLine 'keytool', '-genkeypair', '-noprompt', '-keystore', developmentKey.absolutePath,
+            '-storepass', 'android', '-keypass', 'android', '-alias', 'androiddebugkey',
+            '-dname', 'CN=PDF Splitter Development, O=Development, C=TW',
+            '-keyalg', 'RSA', '-keysize', '2048', '-validity', '3650'
+}
+
+android {
+    namespace 'com.foxicall.pdfsplitter'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.foxicall.pdfsplitter'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    signingConfigs {
+        development {
+            storeFile developmentKey
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildTypes {
+        debug {
+            applicationIdSuffix '.debug'
+            signingConfig signingConfigs.development
+            resValue 'string', 'app_name', 'PDF 拆分（測試版）'
+        }
+        release {
+            minifyEnabled false
+            resValue 'string', 'app_name', 'PDF 章節拆分'
+        }
+    }
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+    testOptions { animationsDisabled true }
+}
+tasks.named('preBuild').configure { dependsOn 'generateDevelopmentKey' }
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test:rules:1.6.1'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
+    androidTestImplementation 'androidx.test.espresso:espresso-intents:3.6.1'
+    androidTestImplementation 'androidx.test.uiautomator:uiautomator:2.3.0'
+}
